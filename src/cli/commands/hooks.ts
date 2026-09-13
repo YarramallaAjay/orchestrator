@@ -7,17 +7,28 @@ export const hooksCommand = new Command('hooks')
   .description('Manage Claude Code hooks for orchestrator auto-pickup');
 
 function getSettingsPath(cwd: string): string {
-  return resolve(cwd, '.claude', 'settings.json');
+  return resolve(cwd, '.claude', 'settings.local.json');
 }
 
-function resolveHookCommand(hookName: string): string {
-  // When installed as npm package, use the bin commands directly via npx
-  // This avoids absolute path issues across different machines
-  const binMap: Record<string, string> = {
-    'session-start': 'orch-hook-session-start',
-    'prompt-intercept': 'orch-hook-prompt-intercept',
-  };
-  return binMap[hookName] ?? hookName;
+function resolveHookScript(hookName: string): string {
+  // Resolve from the compiled dist directory relative to this file
+  // Works both when running via tsx (src/) and from installed package (dist/)
+  const thisDir = dirname(new URL(import.meta.url).pathname);
+
+  // Check if we're in dist/ or src/
+  const hookFileJs = resolve(thisDir, '..', '..', 'hooks', `${hookName}.js`);
+  const hookFileTs = resolve(thisDir, '..', '..', 'hooks', `${hookName}.ts`);
+
+  if (existsSync(hookFileJs)) {
+    return `node ${hookFileJs}`;
+  }
+  // Fallback for running from source with tsx
+  if (existsSync(hookFileTs)) {
+    return `npx tsx ${hookFileTs}`;
+  }
+  // Last resort: assume npm bin is available
+  const binName = `orch-hook-${hookName}`;
+  return `npx ${binName}`;
 }
 
 function readSettings(settingsPath: string): Record<string, any> {
@@ -45,8 +56,8 @@ hooksCommand
       settings.hooks = {};
     }
 
-    const sessionStartCmd = resolveHookCommand('session-start');
-    const promptInterceptCmd = resolveHookCommand('prompt-intercept');
+    const sessionStartCmd = resolveHookScript('session-start');
+    const promptInterceptCmd = resolveHookScript('prompt-intercept');
 
     // SessionStart hook
     settings.hooks.SessionStart = [
@@ -55,7 +66,7 @@ hooksCommand
         hooks: [
           {
             type: 'command',
-            command: `npx ${sessionStartCmd}`,
+            command: sessionStartCmd,
           },
         ],
       },
@@ -68,7 +79,7 @@ hooksCommand
         hooks: [
           {
             type: 'command',
-            command: `npx ${promptInterceptCmd}`,
+            command: promptInterceptCmd,
           },
         ],
       },
@@ -78,8 +89,8 @@ hooksCommand
 
     console.log(chalk.green('Claude Code hooks installed successfully.'));
     console.log(chalk.dim(`  Settings: ${settingsPath}`));
-    console.log(chalk.dim(`  SessionStart hook: session-start.js`));
-    console.log(chalk.dim(`  UserPromptSubmit hook: prompt-intercept.js`));
+    console.log(chalk.dim(`  SessionStart: ${sessionStartCmd}`));
+    console.log(chalk.dim(`  UserPromptSubmit: ${promptInterceptCmd}`));
     console.log('');
     console.log('Next time you start Claude Code in this directory,');
     console.log('it will detect the orchestrator and offer to activate it.');
@@ -146,7 +157,12 @@ hooksCommand
       }
     }
 
+    // Check orchestrator config
+    const configExists = existsSync(resolve(cwd, 'orchestrator.config.yaml'))
+      || existsSync(resolve(cwd, 'orchestrator.config.yml'));
+
     console.log(chalk.bold('Orchestrator Hooks Status:\n'));
+    console.log(`  Config found:    ${configExists ? chalk.green('Yes') : chalk.red('No — run orch init first')}`);
     console.log(`  Hooks installed: ${hooksInstalled ? chalk.green('Yes') : chalk.gray('No')}`);
     console.log(`  Session active:  ${sessionActive ? chalk.green('Yes') : chalk.gray('No')}`);
 
