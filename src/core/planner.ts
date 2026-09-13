@@ -154,8 +154,11 @@ export class Planner {
         runtimeType: this.runtime.type,
         capabilities: [],
         model: this.config.model ?? 'claude-sonnet-4-6',
-        maxTurns: this.config.maxTurns ?? 3,
+        // Single turn only — planner should produce JSON in one shot, no tool use
+        maxTurns: 1,
         permissionMode: 'default',
+        // Explicitly deny all tools so the model can't explore or use tools
+        allowedTools: [],
       },
       cwd: process.cwd(),
     });
@@ -172,20 +175,28 @@ export class Planner {
       messages.push(value as AgentMessage);
     }
 
-    // Extract content from the assistant's response
-    const assistantMessages = messages.filter((m) => m.role === 'assistant');
-    const fullContent = assistantMessages.map((m) => m.content).join('\n');
+    // Merge streamed + result messages, filter to text-only assistant messages
+    // (skip tool_use and tool_result messages which are noise for JSON extraction)
+    const allMessages = [
+      ...messages,
+      ...(result?.messages ?? []),
+    ];
+    const textMessages = allMessages.filter(
+      (m) => m.role === 'assistant' && !m.toolUse && !m.toolResult,
+    );
 
-    // Also check the final result messages
-    if (result?.messages) {
-      const resultContent = result.messages
-        .filter((m) => m.role === 'assistant')
-        .map((m) => m.content)
-        .join('\n');
-      if (resultContent) {
-        return resultContent || fullContent;
+    // Look for the message that contains JSON (has '{' and '"tasks"')
+    for (const msg of textMessages.reverse()) {
+      if (msg.content.includes('"tasks"') && msg.content.includes('{')) {
+        return msg.content;
       }
     }
+
+    // Fallback: concatenate all text assistant messages
+    const fullContent = textMessages
+      .reverse()
+      .map((m) => m.content)
+      .join('\n');
 
     return fullContent;
   }
