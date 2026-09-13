@@ -1,0 +1,45 @@
+{
+  "name": "orchestrator",
+  "version": "0.1.0",
+  "description": "Reusable multi-agent development orchestrator framework",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "orch": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.269",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/static": "^10.1.3",
+    "better-sqlite3": "^11.7.0",
+    "chalk": "^5.4.1",
+    "cli-table3": "^0.6.5",
+    "commander": "^13.1.0",
+    "drizzle-orm": "^0.36.4",
+    "fastify": "^5.12.4",
+    "minimatch": "^10.0.1",
+    "nanoid": "^5.1.2",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.25.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.0",
+    "drizzle-kit": "^0.28.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  }
+}

@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orchestrator Dashboard</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --purple: #bc8cff;
+      --cyan: #39d2c0;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    header h1 { font-size: 18px; font-weight: 600; }
+    header .status { color: var(--text-dim); font-size: 14px; }
+    header .live-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto 1fr;
+      gap: 16px;
+      padding: 16px 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .card h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .stats {
+      grid-column: 1 / -1;
+      display: flex;
+      gap: 16px;
+    }
+
+    .stat-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      flex: 1;
+      text-align: center;
+    }
+
+    .stat-box .value {
+      font-size: 32px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .stat-box .label {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .progress-bar .fill {
+      height: 100%;
+      background: var(--green);
+      border-radius: 4px;
+      transition: width 0.5s ease;
+    }
+
+    /* Task table */
+    .task-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .task-table th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-dim);
+      font-weight: 500;
+    }
+
+    .task-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .task-table tr:hover td { background: rgba(88, 166, 255, 0.04); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .badge-pending { background: rgba(139, 148, 158, 0.2); color: var(--text-dim); }
+    .badge-ready { background: rgba(57, 210, 192, 0.15); color: var(--cyan); }
+    .badge-running { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+    .badge-blocked { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+    .badge-waiting { background: rgba(188, 140, 255, 0.15); color: var(--purple); }
+    .badge-completed { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .badge-failed { background: rgba(248, 81, 73, 0.25); color: var(--red); }
+    .badge-cancelled { background: rgba(139, 148, 158, 0.15); color: var(--text-dim); }
+
+    /* Event log */
+    .event-log {
+      max-height: 400px;
+      overflow-y: auto;
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .event-entry {
+      padding: 4px 0;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+      display: flex;
+      gap: 8px;
+    }
+
+    .event-time { color: var(--text-dim); white-space: nowrap; }
+    .event-type { color: var(--accent); white-space: nowrap; }
+    .event-detail { color: var(--text); word-break: break-word; }
+
+    .tasks-card { grid-column: 1 / -1; }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-dim);
+    }
+
+    /* Agent cards */
+    .agent-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .agent-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+    }
+
+    .agent-card .name { font-weight: 600; font-size: 14px; }
+    .agent-card .role { color: var(--text-dim); font-size: 12px; }
+    .agent-card .caps { margin-top: 8px; }
+    .agent-card .cap-tag {
+      display: inline-block;
+      background: rgba(88, 166, 255, 0.1);
+      color: var(--accent);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      margin: 2px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Orchestrator Dashboard</h1>
+    <div class="status">
+      <span class="live-dot" id="liveDot"></span>
+      <span id="connectionStatus">Connecting...</span>
+    </div>
+  </header>
+
+  <div class="dashboard">
+    <!-- Stats row -->
+    <div class="stats">
+      <div class="stat-box">
+        <div class="value" id="totalTasks">-</div>
+        <div class="label">Total Tasks</div>
+      </div>
+      <div class="stat-box">
+        <div class="value" style="color: var(--green)" id="completedTasks">-</div>
+        <div class="label">Completed</div>
+      </div>
+      <div class="stat-box">
+        <div class="value" style="color: var(--yellow)" id="runningTasks">-</div>
+        <div class="label">Running</div>
+      </div>
+      <div class="stat-box">
+        <div class="value" style="color: var(--cyan)" id="readyTasks">-</div>
+        <div class="label">Ready</div>
+      </div>
+      <div class="stat-box">
+        <div class="value" style="color: var(--red)" id="failedTasks">-</div>
+        <div class="label">Failed</div>
+      </div>
+      <div class="stat-box">
+        <div class="value" id="progressPct">-</div>
+        <div class="label">Progress</div>
+        <div class="progress-bar"><div class="fill" id="progressFill" style="width: 0%"></div></div>
+      </div>
+    </div>
+
+    <!-- Tasks table -->
+    <div class="card tasks-card">
+      <h2>Tasks</h2>
+      <table class="task-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Priority</th>
+            <th>Classification</th>
+            <th>Agent</th>
+            <th>Deps</th>
+          </tr>
+        </thead>
+        <tbody id="taskTableBody">
+          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Agents -->
+    <div class="card">
+      <h2>Agents</h2>
+      <div class="agent-grid" id="agentGrid">
+        <div class="empty-state">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Event log -->
+    <div class="card">
+      <h2>Event Log</h2>
+      <div class="event-log" id="eventLog">
+        <div class="empty-state">Waiting for events...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+
+    // Status badge mapping
+    function statusBadge(status) {
+      const classes = {
+        PENDING: 'badge-pending',
+        READY: 'badge-ready',
+        RUNNING: 'badge-running',
+        BLOCKED: 'badge-blocked',
+        WAITING_FOR_HUMAN: 'badge-waiting',
+        COMPLETED: 'badge-completed',
+        FAILED: 'badge-failed',
+        CANCELLED: 'badge-cancelled',
+      };
+      return `<span class="badge ${classes[status] || ''}">${status}</span>`;
+    }
+
+    // Fetch and render status
+    async function fetchStatus() {
+      try {
+        const res = await fetch(API + '/api/status');
+        const data = await res.json();
+        document.getElementById('totalTasks').textContent = data.total;
+        document.getElementById('completedTasks').textContent = data.counts.COMPLETED || 0;
+        document.getElementById('runningTasks').textContent = data.counts.RUNNING || 0;
+        document.getElementById('readyTasks').textContent = data.counts.READY || 0;
+        document.getElementById('failedTasks').textContent = data.counts.FAILED || 0;
+        document.getElementById('progressPct').textContent = data.progress + '%';
+        document.getElementById('progressFill').style.width = data.progress + '%';
+      } catch (e) {
+        console.error('Failed to fetch status:', e);
+      }
+    }
+
+    // Fetch and render tasks
+    async function fetchTasks() {
+      try {
+        const res = await fetch(API + '/api/tasks');
+        const tasks = await res.json();
+        const tbody = document.getElementById('taskTableBody');
+
+        if (tasks.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No tasks yet</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = tasks.map(t => `
+          <tr>
+            <td style="font-family: monospace; font-size: 11px; color: var(--text-dim)">${t.id.substring(0, 16)}</td>
+            <td>${t.title}</td>
+            <td>${statusBadge(t.status)}</td>
+            <td>${t.priority}</td>
+            <td style="font-size: 11px; color: var(--text-dim)">${t.classification}</td>
+            <td>${t.assignedAgentId || '-'}</td>
+            <td>${t.dependsOn.length}</td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to fetch tasks:', e);
+      }
+    }
+
+    // Fetch and render agents
+    async function fetchAgents() {
+      try {
+        const res = await fetch(API + '/api/agents');
+        const agents = await res.json();
+        const grid = document.getElementById('agentGrid');
+
+        if (agents.length === 0) {
+          grid.innerHTML = '<div class="empty-state">No agents configured</div>';
+          return;
+        }
+
+        grid.innerHTML = agents.map(a => `
+          <div class="agent-card">
+            <div class="name">${a.name}</div>
+            <div class="role">${a.role} &middot; ${a.runtimeType}</div>
+            <div class="caps">
+              ${(a.capabilities || []).map(c =>
+                `<span class="cap-tag">${c.name} (${c.level})</span>`
+              ).join('')}
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to fetch agents:', e);
+      }
+    }
+
+    // SSE event stream
+    function connectSSE() {
+      const eventLog = document.getElementById('eventLog');
+      const liveDot = document.getElementById('liveDot');
+      const connStatus = document.getElementById('connectionStatus');
+
+      const evtSource = new EventSource(API + '/api/events/stream');
+
+      evtSource.onopen = () => {
+        connStatus.textContent = 'Live';
+        liveDot.style.background = 'var(--green)';
+      };
+
+      evtSource.onerror = () => {
+        connStatus.textContent = 'Reconnecting...';
+        liveDot.style.background = 'var(--red)';
+      };
+
+      evtSource.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          const time = new Date(event.timestamp).toLocaleTimeString();
+          const detail = summarizeEvent(event);
+
+          const entry = document.createElement('div');
+          entry.className = 'event-entry';
+          entry.innerHTML = `
+            <span class="event-time">${time}</span>
+            <span class="event-type">${event.type}</span>
+            <span class="event-detail">${detail}</span>
+          `;
+
+          // Remove empty state if present
+          const emptyState = eventLog.querySelector('.empty-state');
+          if (emptyState) emptyState.remove();
+
+          eventLog.insertBefore(entry, eventLog.firstChild);
+
+          // Keep max 200 entries
+          while (eventLog.children.length > 200) {
+            eventLog.removeChild(eventLog.lastChild);
+          }
+
+          // Refresh data on state changes
+          if (event.type.startsWith('task.')) {
+            fetchStatus();
+            fetchTasks();
+          }
+        } catch (err) {
+          // Ignore parse errors (keepalive comments)
+        }
+      };
+    }
+
+    function summarizeEvent(event) {
+      const p = event.payload || {};
+      switch (event.type) {
+        case 'task.state_changed':
+          return `Task ${(p.taskId || '').substring(0, 12)} &rarr; ${p.to}`;
+        case 'task.created':
+          return `Created: ${p.title}`;
+        case 'agent.message':
+          return `Agent ${(p.agentId || '').substring(0, 12)}: ${(p.content || '').substring(0, 100)}`;
+        case 'plan.completed':
+          return `${p.taskCount} tasks planned`;
+        default:
+          return JSON.stringify(p).substring(0, 100);
+      }
+    }
+
+    // Initial load
+    fetchStatus();
+    fetchTasks();
+    fetchAgents();
+    connectSSE();
+
+    // Periodic refresh
+    setInterval(() => {
+      fetchStatus();
+      fetchTasks();
+    }, 10000);
+  </script>
+</body>
+</html>

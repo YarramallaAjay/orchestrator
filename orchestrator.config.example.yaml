@@ -1,0 +1,68 @@
+project:
+  name: "my-project"
+  rootPath: "."
+
+orchestrator:
+  maxConcurrentAgents: 3
+  maxTotalBudgetUsd: 10.0
+  autoRetry: true
+  maxRetries: 2
+  validationEnabled: true
+
+database:
+  path: ".orchestrator/data.db"
+
+agents:
+  templates:
+    - id: "backend-dev"
+      name: "Backend Developer"
+      role: "backend-developer"
+      runtimeType: "claude-sdk"
+      model: "claude-sonnet-4-6"
+      maxTurns: 25
+      maxBudgetUsd: 2.0
+      permissionMode: "acceptEdits"
+      capabilities:
+        - { name: "typescript", level: "expert" }
+        - { name: "nodejs", level: "expert" }
+        - { name: "sql", level: "proficient" }
+      systemPrompt: |
+        You are a backend developer. Follow existing code conventions.
+        Write tests for all new code.
+      allowedTools:
+        - "Read"
+        - "Edit"
+        - "Write"
+        - "Bash"
+        - "Glob"
+        - "Grep"
+
+    - id: "test-engineer"
+      name: "Test Engineer"
+      role: "test-engineer"
+      runtimeType: "claude-sdk"
+      model: "claude-sonnet-4-6"
+      maxTurns: 15
+      maxBudgetUsd: 1.0
+      permissionMode: "acceptEdits"
+      capabilities:
+        - { name: "testing", level: "expert" }
+        - { name: "typescript", level: "proficient" }
+
+mcp:
+  servers: []
+  # Example:
+  # - name: "filesystem"
+  #   type: "stdio"
+  #   command: "npx"
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+  #   autoStart: true
+
+git:
+  integrationBranch: "main"
+  worktreeDir: ".orchestrator/worktrees"
+  branchPrefix: "orch/"
+
+web:
+  port: 3847
+  host: "localhost"
