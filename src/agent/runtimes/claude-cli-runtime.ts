@@ -1,5 +1,6 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { resolve } from 'node:path';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { accessSync, constants, writeFileSync, unlinkSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import type { AgentConfig } from '../types.js';
 import type { AgentRuntime, AgentMessage, AgentRunResult } from './runtime.js';
 
@@ -12,6 +13,7 @@ import type { AgentRuntime, AgentMessage, AgentRunResult } from './runtime.js';
 export class ClaudeCliRuntime implements AgentRuntime {
   readonly type = 'claude-cli' as const;
   private processes = new Map<string, ChildProcess>();
+  private tempMcpConfigs = new Set<string>();
 
   async *run(params: {
     prompt: string;
@@ -20,16 +22,14 @@ export class ClaudeCliRuntime implements AgentRuntime {
     cwd: string;
     sessionId?: string;
     signal?: AbortSignal;
+    mcpServers?: Record<string, unknown>;
   }): AsyncGenerator<AgentMessage, AgentRunResult, undefined> {
     const args = this.buildArgs(params);
     const claudePath = this.findClaudeBinary();
 
     const proc = spawn(claudePath, args, {
       cwd: params.cwd,
-      env: {
-        ...process.env,
-        ...params.config.env,
-      },
+      env: this.buildChildEnv(params.config.env),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -74,10 +74,23 @@ export class ClaudeCliRuntime implements AgentRuntime {
             }
             // Extract metadata from result events
             if (event.type === 'result') {
-              totalCost = event.cost_usd ?? 0;
+              totalCost = event.total_cost_usd ?? event.cost_usd ?? 0;
               turnsUsed = event.num_turns ?? 0;
-              inputTokens = event.input_tokens_used ?? event.input_tokens ?? 0;
-              outputTokens = event.output_tokens_used ?? event.output_tokens ?? 0;
+              if (event.usage) {
+                inputTokens = event.usage.input_tokens ?? 0;
+                outputTokens = event.usage.output_tokens ?? 0;
+              }
+              // Also aggregate from modelUsage for comprehensive accounting
+              if (event.modelUsage && typeof event.modelUsage === 'object') {
+                let totalInput = 0;
+                let totalOutput = 0;
+                for (const model of Object.values(event.modelUsage) as any[]) {
+                  totalInput += model.inputTokens ?? 0;
+                  totalOutput += model.outputTokens ?? 0;
+                }
+                if (totalInput > 0) inputTokens = totalInput;
+                if (totalOutput > 0) outputTokens = totalOutput;
+              }
               lastSessionId = event.session_id ?? null;
             }
           } catch {
@@ -99,10 +112,22 @@ export class ClaudeCliRuntime implements AgentRuntime {
             toolCallCount++;
           }
           if (event.type === 'result') {
-            totalCost = event.cost_usd ?? 0;
+            totalCost = event.total_cost_usd ?? event.cost_usd ?? 0;
             turnsUsed = event.num_turns ?? 0;
-            inputTokens = event.input_tokens_used ?? event.input_tokens ?? 0;
-            outputTokens = event.output_tokens_used ?? event.output_tokens ?? 0;
+            if (event.usage) {
+              inputTokens = event.usage.input_tokens ?? 0;
+              outputTokens = event.usage.output_tokens ?? 0;
+            }
+            if (event.modelUsage && typeof event.modelUsage === 'object') {
+              let totalInput = 0;
+              let totalOutput = 0;
+              for (const model of Object.values(event.modelUsage) as any[]) {
+                totalInput += model.inputTokens ?? 0;
+                totalOutput += model.outputTokens ?? 0;
+              }
+              if (totalInput > 0) inputTokens = totalInput;
+              if (totalOutput > 0) outputTokens = totalOutput;
+            }
             lastSessionId = event.session_id ?? null;
           }
         } catch {
@@ -167,9 +192,53 @@ export class ClaudeCliRuntime implements AgentRuntime {
   }
 
   private findClaudeBinary(): string {
-    // Try the locally installed claude from node_modules
+    // Strategy 1: Local node_modules/.bin/claude
     const localPath = resolve('node_modules', '.bin', 'claude');
-    return localPath;
+    if (this.isExecutable(localPath)) return localPath;
+
+    // Strategy 2: which/where to find globally installed claude
+    try {
+      const cmd = process.platform === 'win32' ? 'where' : 'which';
+      const result = execFileSync(cmd, ['claude'], { encoding: 'utf-8' }).trim();
+      if (result) return result.split('\n')[0]!;
+    } catch { /* not found via which */ }
+
+    // Strategy 3: Common global install paths
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+    const globalPaths = [
+      resolve(home, '.npm', 'bin', 'claude'),
+      '/usr/local/bin/claude',
+      '/opt/homebrew/bin/claude',
+    ];
+    for (const p of globalPaths) {
+      if (this.isExecutable(p)) return p;
+    }
+
+    // Fallback: bare 'claude', let PATH resolve it
+    return 'claude';
+  }
+
+  private isExecutable(path: string): boolean {
+    try {
+      accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private buildChildEnv(configEnv?: Record<string, string>): Record<string, string> {
+    const env = { ...process.env } as Record<string, string>;
+    // Strip env vars that block Claude CLI from running as a subprocess
+    delete env['CLAUDE_CODE'];
+    delete env['CLAUDE_CODE_ENTRYPOINT'];
+    // Mark as orchestrator agent subprocess so hooks skip themselves
+    env['ORCH_AGENT_MODE'] = '1';
+    // Apply user-configured env overrides
+    if (configEnv) {
+      Object.assign(env, configEnv);
+    }
+    return env;
   }
 
   private buildArgs(params: {
@@ -177,6 +246,8 @@ export class ClaudeCliRuntime implements AgentRuntime {
     systemPrompt?: string;
     config: AgentConfig;
     sessionId?: string;
+    mcpServers?: Record<string, unknown>;
+    cwd?: string;
   }): string[] {
     const args: string[] = [
       '-p', params.prompt,
@@ -207,6 +278,19 @@ export class ClaudeCliRuntime implements AgentRuntime {
 
     if (params.sessionId) {
       args.push('--resume', params.sessionId);
+    }
+
+    // Write MCP server config to temp file if servers are provided
+    if (params.mcpServers && Object.keys(params.mcpServers).length > 0) {
+      const mcpConfigPath = join(params.cwd ?? process.cwd(), '.orch-mcp-config.json');
+      try {
+        writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: params.mcpServers }, null, 2));
+        args.push('--mcp-config', mcpConfigPath);
+        // Store for cleanup
+        this.tempMcpConfigs.add(mcpConfigPath);
+      } catch {
+        // Ignore MCP config write failures
+      }
     }
 
     return args;

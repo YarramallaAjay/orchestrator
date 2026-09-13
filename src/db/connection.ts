@@ -54,6 +54,7 @@ export function initializeDb(db: Db) {
       acceptance_criteria TEXT NOT NULL DEFAULT '[]',
       validation_script TEXT,
       tags TEXT NOT NULL DEFAULT '[]',
+      target_files TEXT NOT NULL DEFAULT '[]',
       estimated_effort TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -185,6 +186,18 @@ export function initializeDb(db: Db) {
       duration_ms INTEGER NOT NULL DEFAULT 0,
       attempt INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS observations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      relevant_files TEXT NOT NULL DEFAULT '[]',
+      confidence REAL NOT NULL DEFAULT 0.5,
       created_at TEXT NOT NULL
     );
 

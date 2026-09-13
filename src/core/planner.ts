@@ -3,11 +3,14 @@ import type { AgentRuntime, AgentMessage } from '../agent/runtimes/runtime.js';
 import type { CreateTaskInput } from '../task/types.js';
 import { TaskClassification } from '../task/types.js';
 import { logger } from '../util/logger.js';
+import type { SessionAnalytics } from './session-analytics.js';
 
 interface PlannerConfig {
   projectId: string;
   model?: string;
   maxTurns?: number;
+  maxRetries?: number;
+  sessionAnalytics?: SessionAnalytics;
 }
 
 interface DecomposedTask {
@@ -17,6 +20,7 @@ interface DecomposedTask {
   priority: number;
   dependsOn: string[];
   tags: string[];
+  targetFiles: string[];
   acceptanceCriteria: string[];
   validationScript?: string;
   estimatedEffort?: string;
@@ -31,9 +35,11 @@ interface DecompositionResult {
   };
 }
 
-const PLANNER_SYSTEM_PROMPT = `You are a software project planner. Your job is to decompose high-level requirements into a structured task graph.
+const PLANNER_SYSTEM_PROMPT = `You are a software project planner. Your ONLY job is to output a JSON task graph.
 
-You must output valid JSON matching this schema:
+CRITICAL: You must respond with ONLY a valid JSON object. No explanations, no markdown, no diagrams, no commentary. Your entire response must be parseable by JSON.parse().
+
+JSON schema:
 {
   "tasks": [
     {
@@ -43,6 +49,7 @@ You must output valid JSON matching this schema:
       "priority": <number, 0=highest>,
       "dependsOn": ["<title of dependency task>"],
       "tags": ["backend", "frontend", "database", etc.],
+      "targetFiles": ["src/path/to/file.ts", "src/other/file.ts"],
       "acceptanceCriteria": ["Criterion 1", "Criterion 2"],
       "validationScript": "optional command to validate",
       "estimatedEffort": "trivial|small|medium|large|xlarge"
@@ -50,7 +57,7 @@ You must output valid JSON matching this schema:
   ],
   "context": {
     "architecture": "Brief architecture description",
-    "decisions": ["Key architecture decision 1", "Decision 2"],
+    "decisions": ["Key architecture decision 1"],
     "contracts": ["API contract description 1"]
   }
 }
@@ -65,10 +72,15 @@ Rules:
 7. Always include setup/scaffolding tasks first.
 8. Include test tasks for each module.
 9. Include integration tasks at the end.
-10. Output ONLY the JSON, no other text.`;
+10. Every task MUST list the specific files it will create or modify in targetFiles. This enables conflict detection — tasks with overlapping targetFiles will be serialized.
+
+REMEMBER: Output ONLY the JSON object. Nothing else. No text before or after the JSON.`;
+
+const RETRY_PROMPT = `Your previous response was not valid JSON. You MUST respond with ONLY a valid JSON object matching the schema I described. No markdown, no explanations, no code fences — just the raw JSON object starting with { and ending with }. Try again with the same requirements.`;
 
 /**
  * Uses an LLM agent to decompose requirements into a task graph.
+ * Includes retry logic if the planner doesn't return valid JSON.
  */
 export class Planner {
   constructor(
@@ -78,12 +90,60 @@ export class Planner {
 
   /**
    * Decompose a requirements document/string into tasks.
+   * Retries up to maxRetries times if JSON parsing fails.
    */
-  async decompose(requirements: string): Promise<CreateTaskInput[]> {
+  async decompose(requirements: string, discoveryContext?: string): Promise<CreateTaskInput[]> {
     logger.info('Decomposing requirements into task graph');
 
-    const prompt = `Decompose the following requirements into a structured task graph:\n\n${requirements}`;
+    // Fetch historical insights if analytics are available
+    let insightsSection = '';
+    if (this.config.sessionAnalytics) {
+      try {
+        const insights = await this.config.sessionAnalytics.analyze(this.config.projectId);
+        insightsSection = this.config.sessionAnalytics.formatForPlannerPrompt(insights);
+      } catch (err) {
+        logger.warn({ err }, 'Failed to load session analytics');
+      }
+    }
 
+    const prompt = [
+      'Decompose the following requirements into a structured task graph:',
+      '',
+      requirements,
+      discoveryContext ? `\n${discoveryContext}` : '',
+      insightsSection ? `\n${insightsSection}` : '',
+    ].filter(Boolean).join('\n');
+
+    const maxRetries = this.config.maxRetries ?? 2;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const isRetry = attempt > 0;
+      const currentPrompt = isRetry ? `${RETRY_PROMPT}\n\nOriginal requirements:\n${requirements}` : prompt;
+
+      try {
+        const content = await this.runPlanner(currentPrompt);
+        return this.parseDecomposition(content);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < maxRetries) {
+          logger.warn({ attempt: attempt + 1, error: lastError.message }, 'Planner output not valid JSON, retrying');
+        }
+      }
+    }
+
+    throw lastError ?? new Error('Planner failed to produce valid JSON after retries');
+  }
+
+  /**
+   * Decompose from a requirements file.
+   */
+  async decomposeFile(filePath: string): Promise<CreateTaskInput[]> {
+    const content = readFileSync(filePath, 'utf-8');
+    return this.decompose(content);
+  }
+
+  private async runPlanner(prompt: string): Promise<string> {
     const generator = this.runtime.run({
       prompt,
       systemPrompt: PLANNER_SYSTEM_PROMPT,
@@ -112,7 +172,7 @@ export class Planner {
       messages.push(value as AgentMessage);
     }
 
-    // Extract JSON from the assistant's response
+    // Extract content from the assistant's response
     const assistantMessages = messages.filter((m) => m.role === 'assistant');
     const fullContent = assistantMessages.map((m) => m.content).join('\n');
 
@@ -123,19 +183,11 @@ export class Planner {
         .map((m) => m.content)
         .join('\n');
       if (resultContent) {
-        return this.parseDecomposition(resultContent || fullContent);
+        return resultContent || fullContent;
       }
     }
 
-    return this.parseDecomposition(fullContent);
-  }
-
-  /**
-   * Decompose from a requirements file.
-   */
-  async decomposeFile(filePath: string): Promise<CreateTaskInput[]> {
-    const content = readFileSync(filePath, 'utf-8');
-    return this.decompose(content);
+    return fullContent;
   }
 
   private parseDecomposition(content: string): CreateTaskInput[] {
@@ -173,7 +225,6 @@ export class Planner {
     }
 
     // Convert to CreateTaskInput array
-    // We'll assign temporary IDs based on index for dependency resolution
     const tempIds: string[] = [];
     const inputs: CreateTaskInput[] = [];
 
@@ -188,23 +239,22 @@ export class Planner {
         description: t.description,
         classification: this.parseClassification(t.classification),
         priority: t.priority ?? (i * 10),
-        dependsOn: [], // Will be resolved after all tasks are created
+        dependsOn: [],
         tags: t.tags ?? [],
+        targetFiles: t.targetFiles ?? [],
         acceptanceCriteria: t.acceptanceCriteria ?? [],
         validationScript: t.validationScript,
         estimatedEffort: this.parseEffort(t.estimatedEffort),
       });
     }
 
-    // Store dependency info for post-creation resolution
-    // The caller (orchestrator) will need to resolve these after creating tasks
+    // Resolve dependency references
     for (let i = 0; i < parsed.tasks.length; i++) {
       const t = parsed.tasks[i]!;
       if (t.dependsOn?.length) {
         const depIndices = t.dependsOn
           .map((title) => titleMap.get(title))
           .filter((idx): idx is number => idx !== undefined);
-        // Store as __temp_N references - the orchestrator will resolve
         inputs[i]!.dependsOn = depIndices.map((idx) => `__temp_${idx}`);
       }
     }

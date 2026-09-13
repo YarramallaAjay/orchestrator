@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { Task } from '../task/types.js';
 import type { AgentRunResult } from '../agent/runtimes/runtime.js';
@@ -41,7 +43,27 @@ export class Validator {
       checks.push(scriptResult);
     }
 
-    // Check 3: Acceptance criteria (basic presence check in output)
+    // Check 3: TypeScript type check (if modified files include .ts/.tsx)
+    const modifiedFiles = this.extractModifiedFiles(result);
+    const hasTsFiles = modifiedFiles.some((f) => /\.tsx?$/.test(f));
+    if (hasTsFiles && existsSync(resolve(cwd, 'tsconfig.json'))) {
+      const tscCheck = await this.runValidationScript('npx tsc --noEmit', cwd);
+      tscCheck.name = 'typescript_typecheck';
+      checks.push(tscCheck);
+    }
+
+    // Check 4: ESLint (if eslint config exists and files were modified)
+    if (modifiedFiles.length > 0 && this.hasEslintConfig(cwd)) {
+      const eslintFiles = modifiedFiles.filter((f) => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(f));
+      if (eslintFiles.length > 0) {
+        const eslintCmd = `npx eslint ${eslintFiles.map((f) => `"${f}"`).join(' ')}`;
+        const eslintCheck = await this.runValidationScript(eslintCmd, cwd);
+        eslintCheck.name = 'eslint';
+        checks.push(eslintCheck);
+      }
+    }
+
+    // Check 5: Acceptance criteria (basic presence check in output)
     if (task.acceptanceCriteria.length > 0) {
       const criteriaCheck = this.checkAcceptanceCriteria(task, result);
       checks.push(criteriaCheck);
@@ -109,6 +131,34 @@ export class Validator {
         output: error.stderr || error.stdout || error.message || 'Script failed',
       };
     }
+  }
+
+  /**
+   * Extract file paths from Write/Edit tool_use calls in agent messages.
+   */
+  private extractModifiedFiles(result: AgentRunResult): string[] {
+    const files = new Set<string>();
+    for (const msg of result.messages) {
+      if (msg.toolUse) {
+        const name = msg.toolUse.name.toLowerCase();
+        if (name === 'write' || name === 'edit') {
+          const filePath = (msg.toolUse.input as any)?.file_path ?? (msg.toolUse.input as any)?.path;
+          if (typeof filePath === 'string') {
+            files.add(filePath);
+          }
+        }
+      }
+    }
+    return [...files];
+  }
+
+  private hasEslintConfig(cwd: string): boolean {
+    const configNames = [
+      'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs',
+      'eslint.config.ts', 'eslint.config.mts',
+      '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.json', '.eslintrc.yml', '.eslintrc.yaml', '.eslintrc',
+    ];
+    return configNames.some((name) => existsSync(resolve(cwd, name)));
   }
 
   private checkAcceptanceCriteria(task: Task, result: AgentRunResult): ValidationCheck {

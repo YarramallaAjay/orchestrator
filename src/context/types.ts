@@ -5,6 +5,9 @@ export enum ContextCategory {
   DECISION = 'DECISION',
   CONVENTION = 'CONVENTION',
   DEPENDENCY = 'DEPENDENCY',
+  AGENT_DISCOVERY = 'AGENT_DISCOVERY',
+  FILE_LOCK = 'FILE_LOCK',
+  SHARED_DECISION = 'SHARED_DECISION',
 }
 
 export interface ContextEntry {

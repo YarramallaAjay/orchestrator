@@ -9,6 +9,11 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+// Skip when running inside an orchestrator agent subprocess
+if (process.env.ORCH_AGENT_MODE === '1') {
+  process.exit(0);
+}
+
 const cwd = process.cwd();
 const markerPath = resolve(cwd, '.orchestrator', 'session-active');
 

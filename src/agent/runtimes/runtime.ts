@@ -43,6 +43,7 @@ export interface AgentRuntime {
     cwd: string;
     sessionId?: string;
     signal?: AbortSignal;
+    mcpServers?: Record<string, unknown>;
   }): AsyncGenerator<AgentMessage, AgentRunResult, undefined>;
 
   /** Check if this runtime is available in the current environment. */

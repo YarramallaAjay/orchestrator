@@ -11,11 +11,23 @@ import { SessionManager, type SessionState, type TaskExecutionMetrics } from './
 import { EventBus } from '../events/event-bus.js';
 import { EventStore } from '../events/event-store.js';
 import { ContextStore } from '../context/context-store.js';
+import { ContextCategory } from '../context/types.js';
+import { ProjectScanner } from '../context/project-scanner.js';
+import { ArtifactExtractor, type ExtractedArtifact } from './artifact-extractor.js';
+import { ConflictDetector } from './conflict-detector.js';
+import { ObservationStore } from '../context/observation-store.js';
+import { SessionAnalytics } from './session-analytics.js';
 import { generateId } from '../util/id.js';
 import { logger } from '../util/logger.js';
 import { orchestratorSessions, taskMetrics } from '../db/schema.js';
 import type { ProjectConfig } from '../config/types.js';
 import type { Db } from '../db/connection.js';
+import { WorktreeManager, type WorktreeInfo } from '../git/worktree-manager.js';
+import { MergeCoordinator } from '../git/merge-coordinator.js';
+import { McpRegistry } from '../mcp/mcp-registry.js';
+import { DiscoveryAgent, type DiscoveryResult } from './discovery-agent.js';
+import { LiveContext } from '../context/live-context.js';
+import { SkillAssigner } from './skill-assigner.js';
 
 export type OrchestratorStage = 'planning' | 'awaiting_approval' | 'scheduling' | 'executing' | 'validating' | 'completed';
 
@@ -59,6 +71,8 @@ export interface OrchestratorDeps {
   eventStore: EventStore;
   contextStore: ContextStore;
   taskRepo: TaskRepository;
+  worktreeManager?: WorktreeManager;
+  mcpRegistry?: McpRegistry;
 }
 
 /**
@@ -71,6 +85,12 @@ export class Orchestrator {
   private executor: Executor;
   private planner: Planner;
   private validator: Validator;
+  private artifactExtractor: ArtifactExtractor;
+  private conflictDetector: ConflictDetector;
+  private observationStore: ObservationStore;
+  private skillAssigner: SkillAssigner;
+  private taskArtifacts = new Map<string, ExtractedArtifact[]>();
+  private liveContext: LiveContext | null = null;
   private isRunning = false;
   private abortController: AbortController | null = null;
 
@@ -84,6 +104,10 @@ export class Orchestrator {
     this.scheduler = new Scheduler();
     this.executor = new Executor(deps.runtimes, deps.eventBus);
     this.validator = new Validator();
+    this.artifactExtractor = new ArtifactExtractor();
+    this.conflictDetector = new ConflictDetector();
+    this.observationStore = new ObservationStore(deps.db);
+    this.skillAssigner = new SkillAssigner(deps.mcpRegistry);
 
     // Use the first available runtime for the planner
     const plannerRuntime = deps.runtimes.values().next().value;
@@ -93,6 +117,7 @@ export class Orchestrator {
     this.planner = new Planner(plannerRuntime, {
       projectId: deps.projectId,
       model: 'claude-sonnet-4-6',
+      sessionAnalytics: new SessionAnalytics(deps.db),
     });
 
     // Attach event store
@@ -102,10 +127,10 @@ export class Orchestrator {
   /**
    * Plan: decompose requirements into tasks.
    */
-  async plan(requirements: string): Promise<Task[]> {
+  async plan(requirements: string, discoveryContext?: string): Promise<Task[]> {
     logger.info('Starting requirement decomposition');
 
-    const taskInputs = await this.planner.decompose(requirements);
+    const taskInputs = await this.planner.decompose(requirements, discoveryContext);
 
     // Create tasks and resolve dependency references
     const created: Task[] = [];
@@ -335,9 +360,84 @@ export class Orchestrator {
     };
 
     try {
+      // Create live context for inter-agent communication
+      this.liveContext = new LiveContext(this.deps.contextStore, this.deps.projectId);
+
+      // Phase 0a: Sync MCP server configs from project config
+      if (this.deps.mcpRegistry && this.deps.config.mcp.servers.length > 0) {
+        try {
+          await this.deps.mcpRegistry.syncFromConfig(this.deps.config.mcp.servers);
+          logger.info({ count: this.deps.config.mcp.servers.length }, 'MCP servers synced from config');
+        } catch (err) {
+          logger.warn({ err }, 'Failed to sync MCP server configs');
+        }
+      }
+
+      // Phase 0b: Project context scan
+      try {
+        const scanner = new ProjectScanner();
+        const scanResult = scanner.scan(this.deps.rootPath);
+        const scanContext = scanner.formatAsContext(scanResult);
+        await this.deps.contextStore.set({
+          projectId: this.deps.projectId,
+          key: 'project-scan',
+          category: ContextCategory.ARCHITECTURE,
+          title: 'Project Structure & Technology',
+          content: scanContext,
+          updatedBy: 'orchestrator:project-scanner',
+        });
+        logger.info({ name: scanResult.name, language: scanResult.language }, 'Project scanned');
+      } catch (err) {
+        logger.warn({ err }, 'Project scan failed, continuing without project context');
+      }
+
+      // Phase 0c: Discovery (deep codebase analysis)
+      let planningRequirements = requirements;
+      let discoveryContext: string | undefined;
+      if (this.deps.config.discovery?.enabled !== false) {
+        try {
+          emitProgress('planning', 'Running discovery agent to analyze codebase...');
+          const discoveryRuntime = this.deps.runtimes.values().next().value;
+          if (discoveryRuntime) {
+            const discoveryAgent = new DiscoveryAgent(discoveryRuntime, {
+              enabled: true,
+              model: this.deps.config.discovery?.model ?? 'claude-sonnet-4-6',
+              maxTurns: this.deps.config.discovery?.maxTurns ?? 15,
+            });
+
+            const discoveryResult = await discoveryAgent.discover(requirements, {
+              rootPath: this.deps.rootPath,
+            });
+
+            // Store discovery result in context store
+            discoveryContext = DiscoveryAgent.formatForPlanner(discoveryResult);
+            await this.deps.contextStore.set({
+              projectId: this.deps.projectId,
+              key: 'discovery-analysis',
+              category: ContextCategory.ARCHITECTURE,
+              title: 'Discovery Analysis',
+              content: discoveryContext,
+              updatedBy: 'orchestrator:discovery-agent',
+            });
+
+            // Use refined requirements for planning
+            if (discoveryResult.refinedRequirements) {
+              planningRequirements = discoveryResult.refinedRequirements;
+            }
+
+            logger.info({
+              relevantFiles: discoveryResult.relevantFiles.length,
+              patterns: discoveryResult.codePatterns.length,
+            }, 'Discovery phase complete');
+          }
+        } catch (err) {
+          logger.warn({ err }, 'Discovery phase failed, continuing with basic planning');
+        }
+      }
+
       // Phase 1: Planning
       emitProgress('planning', 'Decomposing requirements into tasks...');
-      const planned = await this.plan(requirements);
+      const planned = await this.plan(planningRequirements, discoveryContext);
       totalPlanned = planned.length;
       emitProgress('planning', `Planned ${totalPlanned} tasks`);
 
@@ -404,12 +504,54 @@ export class Orchestrator {
         (session.totalCostUsd > 0 ? ` ($${session.totalCostUsd.toFixed(4)})` : '') +
         ` | ${session.totalInputTokens + session.totalOutputTokens} tokens, ${session.totalToolCalls} tool calls, ${session.totalTurns} turns`;
 
+      // Check for file conflicts between tasks
+      const conflictReport = this.conflictDetector.detect();
+      if (conflictReport.hasConflicts) {
+        const conflictSummary = conflictReport.conflicts
+          .map((c) => `  ${c.taskIdA} <-> ${c.taskIdB}: ${c.sharedFiles.join(', ')}`)
+          .join('\n');
+        logger.warn({ conflicts: conflictReport.conflicts.length }, 'File conflicts detected between tasks');
+        await this.deps.eventBus.publish({
+          id: generateId('evt'),
+          type: 'orchestrator.conflicts_detected',
+          source: 'orchestrator',
+          timestamp: new Date().toISOString(),
+          projectId: this.deps.projectId,
+          payload: { conflicts: conflictReport.conflicts, summary: conflictSummary },
+        });
+      }
+      this.conflictDetector.reset();
+
+      // Phase 5: Merge worktrees back into integration branch
+      if (this.deps.worktreeManager && completed.length > 0) {
+        try {
+          const mergeCoordinator = new MergeCoordinator(this.deps.worktreeManager);
+          const plan = await mergeCoordinator.planIntegration();
+          if (plan.order.length > 0) {
+            logger.info({ worktrees: plan.order.length }, 'Merging worktrees into integration branch');
+            const mergeResults = await mergeCoordinator.executeIntegration(
+              plan.order.map((wt) => wt.id),
+              { stopOnConflict: false },
+            );
+            const mergeFailures = [...mergeResults.entries()].filter(([, r]) => !r.success);
+            if (mergeFailures.length > 0) {
+              logger.warn({ failures: mergeFailures.length }, 'Some worktree merges had conflicts');
+            }
+          }
+          await this.deps.worktreeManager.cleanup();
+        } catch (err) {
+          logger.warn({ err }, 'Worktree merge/cleanup failed');
+        }
+      }
+
       emitProgress('completed', summary);
       this.persistSessionToDb(session, durationMs, totalPlanned);
 
       this.activeSession = null;
       this.activeSessionManager = null;
       this.activeSessionId = null;
+      this.liveContext?.reset();
+      this.liveContext = null;
 
       return {
         success,
@@ -433,6 +575,8 @@ export class Orchestrator {
       this.activeSession = null;
       this.activeSessionManager = null;
       this.activeSessionId = null;
+      this.liveContext?.reset();
+      this.liveContext = null;
 
       return {
         success: false,
@@ -480,15 +624,99 @@ export class Orchestrator {
       payload: { taskId: task.id, from: task.status, to: TaskStatus.RUNNING },
     });
 
-    // Build context
+    // Build context (shared project context + upstream artifacts)
     const context = await this.deps.contextStore.buildAgentContext(
       this.deps.projectId,
       task,
     );
 
+    // Build upstream artifact context from completed dependencies
+    const upstreamContext = await this.buildUpstreamArtifactContext(task);
+
+    // Include relevant observations from previous tasks
+    let observationContext = '';
+    try {
+      const relevantObs = await this.observationStore.findRelevant(this.deps.projectId);
+      observationContext = this.observationStore.formatForContext(relevantObs);
+    } catch (err) {
+      logger.warn({ err }, 'Failed to load observations');
+    }
+
+    // Include live context from sibling agents
+    let liveContextSnapshot = '';
+    if (this.liveContext) {
+      liveContextSnapshot = this.liveContext.buildLiveContextSnapshot();
+    }
+
+    let fullContext: string | undefined = [context, upstreamContext, observationContext, liveContextSnapshot].filter(Boolean).join('\n\n') || undefined;
+
+    // Create worktree for task isolation (if git repo)
+    let executionCwd = this.deps.rootPath;
+    let worktreeInfo: WorktreeInfo | null = null;
+    if (this.deps.worktreeManager) {
+      try {
+        worktreeInfo = await this.deps.worktreeManager.create(task, agentConfig.id);
+        executionCwd = worktreeInfo.path;
+        await this.deps.taskRepo.update(task.id, { worktreeId: worktreeInfo.id });
+        logger.info({ taskId: task.id, worktree: worktreeInfo.path, branch: worktreeInfo.branch }, 'Created worktree for task');
+      } catch (err) {
+        logger.warn({ taskId: task.id, err }, 'Failed to create worktree, using rootPath');
+      }
+    }
+
+    // Assign skills based on task analysis
+    const skillAssignment = this.skillAssigner.assignForTask(task, agentConfig);
+
+    // Add skill guidance to context
+    if (skillAssignment.guidance) {
+      fullContext = [fullContext, skillAssignment.guidance].filter(Boolean).join('\n\n') || undefined;
+    }
+
+    // Resolve MCP servers for this agent (merge skill-assigned + agent-configured)
+    let resolvedMcpServers: Record<string, unknown> | undefined;
+
+    // Start with skill-assigned MCP servers
+    if (Object.keys(skillAssignment.mcpServers).length > 0) {
+      resolvedMcpServers = {};
+      for (const [name, config] of Object.entries(skillAssignment.mcpServers)) {
+        resolvedMcpServers[name] = {
+          type: config.type ?? 'stdio',
+          command: config.command,
+          args: config.args,
+          env: {
+            ...config.env,
+            ORCH_CWD: executionCwd,
+          },
+        };
+      }
+    }
+
+    // Add agent-configured MCP servers from registry
+    if (this.deps.mcpRegistry && agentConfig.mcpServers?.length) {
+      if (!resolvedMcpServers) resolvedMcpServers = {};
+      for (const serverName of agentConfig.mcpServers) {
+        const serverConfig = await this.deps.mcpRegistry.getServer(serverName);
+        if (serverConfig) {
+          resolvedMcpServers[serverName] = {
+            type: serverConfig.type ?? 'stdio',
+            command: serverConfig.command,
+            args: serverConfig.args,
+            env: Object.keys(serverConfig.env).length > 0 ? serverConfig.env : undefined,
+          };
+        } else {
+          logger.warn({ taskId: task.id, server: serverName }, 'MCP server not found in registry');
+        }
+      }
+    }
+
+    if (resolvedMcpServers && Object.keys(resolvedMcpServers).length === 0) {
+      resolvedMcpServers = undefined;
+    }
+
     const result = await this.executor.execute(task, agentConfig, {
-      cwd: this.deps.rootPath,
-      additionalContext: context || undefined,
+      cwd: executionCwd,
+      additionalContext: fullContext,
+      mcpServers: resolvedMcpServers,
     });
 
     const taskDurationMs = Date.now() - taskStartTime;
@@ -503,7 +731,7 @@ export class Orchestrator {
 
     // Validate
     if (this.deps.config.orchestrator.validationEnabled) {
-      const validation = await this.validator.validate(task, result, this.deps.rootPath);
+      const validation = await this.validator.validate(task, result, executionCwd);
 
       if (!validation.passed) {
         // Persist task metrics for this attempt
@@ -542,8 +770,35 @@ export class Orchestrator {
     // Success
     this.persistTaskMetrics(task, agentConfig.id, execMetrics, 'COMPLETED');
 
+    // Extract artifacts for downstream tasks
+    const artifacts = this.artifactExtractor.extract(result);
+    this.taskArtifacts.set(task.id, artifacts);
+
+    // Register files for conflict detection
+    this.conflictDetector.registerTaskFiles(task.id, result);
+
+    // Extract and store observations for knowledge sharing
+    try {
+      const agentId = agentConfig.id;
+      const extracted = this.observationStore.extractFromResult(result, {
+        projectId: this.deps.projectId,
+        taskId: task.id,
+        agentId,
+      });
+      for (const obs of extracted) {
+        await this.observationStore.add(obs);
+      }
+    } catch (err) {
+      logger.warn({ err, taskId: task.id }, 'Failed to extract observations');
+    }
+
     await this.deps.taskRepo.transition(task.id, TaskStatus.COMPLETED);
-    await this.deps.taskRepo.update(task.id, { outputArtifacts: result.outputArtifacts });
+    await this.deps.taskRepo.update(task.id, {
+      outputArtifacts: {
+        ...result.outputArtifacts,
+        _extractedArtifacts: artifacts,
+      },
+    });
     task.status = TaskStatus.COMPLETED;
     this.taskGraph.updateTask(task);
     options.onTaskComplete?.(task, execMetrics);
@@ -559,6 +814,25 @@ export class Orchestrator {
 
     // Promote newly ready tasks
     await this.promoteReadyTasks();
+  }
+
+  private async buildUpstreamArtifactContext(task: Task): Promise<string> {
+    const deps = await this.deps.taskRepo.getDependencies(task.id);
+    if (deps.length === 0) return '';
+
+    const sections: string[] = ['## Upstream Task Output\n'];
+
+    for (const dep of deps) {
+      const depTask = await this.deps.taskRepo.getById(dep.dependsOnTaskId);
+      if (!depTask || depTask.status !== TaskStatus.COMPLETED) continue;
+
+      const artifacts = this.taskArtifacts.get(depTask.id) ?? [];
+      if (artifacts.length > 0) {
+        sections.push(this.artifactExtractor.formatForDownstream(depTask.title, artifacts));
+      }
+    }
+
+    return sections.length > 1 ? sections.join('\n') : '';
   }
 
   private persistTaskMetrics(

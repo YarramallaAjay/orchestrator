@@ -97,4 +97,90 @@ Include unit tests. The date formatter must handle edge cases.`,
       },
     ],
   },
+  {
+    name: 'file-conflict-prevention',
+    description: 'Verify that tasks with overlapping targetFiles are serialized (not run concurrently). Two tasks target the same file — they must not run in parallel.',
+    requirements: `Create a shared utility module:
+- Task A: Create src/utils/helpers.ts with string formatting functions
+- Task B: Add date formatting functions to src/utils/helpers.ts
+- Task C: Create src/utils/validators.ts with input validators
+- Task D: Write tests for all utility functions
+
+Tasks A and B both target src/utils/helpers.ts and must be serialized.
+Tasks A and C can run in parallel (different files).`,
+    expectedTaskCount: { min: 3, max: 6 },
+    maxBudgetUsd: 1.5,
+    maxDurationMs: 300_000,
+    validationChecks: [
+      {
+        name: 'no_file_conflicts',
+        type: 'custom',
+      },
+      {
+        name: 'tasks_with_shared_files_serialized',
+        type: 'custom',
+      },
+      {
+        name: 'all_tasks_have_target_files',
+        type: 'custom',
+      },
+    ],
+  },
+  {
+    name: 'discovery-quality',
+    description: 'Verify that the discovery agent produces accurate file analysis and identifies relevant code patterns before planning.',
+    requirements: `Add a new API endpoint to the existing Express app:
+- GET /api/users/:id/posts — returns all posts by a user
+- Include pagination support (page, limit query params)
+- Add input validation
+- Write integration tests
+
+The discovery agent should identify existing route files, models, and test patterns.`,
+    expectedTaskCount: { min: 3, max: 8 },
+    maxBudgetUsd: 2.0,
+    maxDurationMs: 600_000,
+    validationChecks: [
+      {
+        name: 'discovery_produced_relevant_files',
+        type: 'custom',
+      },
+      {
+        name: 'discovery_found_patterns',
+        type: 'custom',
+      },
+      {
+        name: 'planning_used_discovery',
+        type: 'custom',
+      },
+    ],
+  },
+  {
+    name: 'skill-assignment',
+    description: 'Verify that the correct skills are assigned per task based on tags and target files.',
+    requirements: `Build a calculator library:
+- Core calculation functions (add, subtract, multiply, divide)
+- Unit tests for all functions
+- CLI wrapper for interactive use
+- Package.json setup with build and test scripts
+
+Testing tasks should get the test-runner skill. All tasks should get shared-context.`,
+    expectedTaskCount: { min: 3, max: 6 },
+    maxBudgetUsd: 1.0,
+    maxDurationMs: 300_000,
+    validationChecks: [
+      {
+        name: 'test_tasks_have_test_runner',
+        type: 'custom',
+      },
+      {
+        name: 'all_tasks_have_shared_context',
+        type: 'custom',
+      },
+      {
+        name: 'cost_under_budget',
+        type: 'cost_under',
+        threshold: 1.0,
+      },
+    ],
+  },
 ];

@@ -8,6 +8,7 @@ import { logger } from '../util/logger.js';
 export interface ExecutionContext {
   cwd: string;
   additionalContext?: string;
+  mcpServers?: Record<string, unknown>;
 }
 
 /**
@@ -47,6 +48,7 @@ export class Executor {
       config: agentConfig,
       cwd: context.cwd,
       signal: abortController.signal,
+      mcpServers: context.mcpServers,
     });
 
     let result: AgentRunResult;

@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import chalk from 'chalk';
-import { ClaudeCliRuntime } from '../../agent/runtimes/claude-cli-runtime.js';
+import { ClaudeSdkRuntime } from '../../agent/runtimes/claude-sdk-runtime.js';
 import { Planner } from '../../core/planner.js';
 import { TaskRepository } from '../../task/task-repository.js';
 import { TaskStatus } from '../../task/types.js';
@@ -26,7 +26,7 @@ export const planCommand = new Command('plan')
     console.log(chalk.dim(`  Model: ${options.model}`));
     console.log('');
 
-    const runtime = new ClaudeCliRuntime();
+    const runtime = new ClaudeSdkRuntime();
     const planner = new Planner(runtime, {
       projectId,
       model: options.model,

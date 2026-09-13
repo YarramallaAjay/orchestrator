@@ -21,6 +21,11 @@ export const DEFAULT_CONFIG: ProjectConfig = {
   mcp: {
     servers: [],
   },
+  discovery: {
+    enabled: true,
+    model: 'claude-sonnet-4-6',
+    maxTurns: 15,
+  },
   git: {
     integrationBranch: 'main',
     worktreeDir: '.orchestrator/worktrees',

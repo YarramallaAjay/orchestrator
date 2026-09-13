@@ -38,6 +38,7 @@ const DEFAULT_CONFIG: ProjectConfig = {
   database: { path: '.orchestrator/data.db' },
   agents: { templates: [] },
   mcp: { servers: [] },
+  discovery: { enabled: true, model: 'claude-sonnet-4-6', maxTurns: 15 },
   git: { integrationBranch: 'main', worktreeDir: '.orchestrator/worktrees', branchPrefix: 'orch/' },
   web: { port: 3847, host: 'localhost' },
 };

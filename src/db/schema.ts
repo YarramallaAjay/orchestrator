@@ -29,6 +29,7 @@ export const tasks = sqliteTable('tasks', {
   acceptanceCriteria: text('acceptance_criteria').notNull().default('[]'),
   validationScript: text('validation_script'),
   tags: text('tags').notNull().default('[]'),
+  targetFiles: text('target_files').notNull().default('[]'),
   estimatedEffort: text('estimated_effort'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -181,6 +182,19 @@ export const evalRuns = sqliteTable('eval_runs', {
   metrics: text('metrics'),
   config: text('config'),
   notes: text('notes'),
+});
+
+// ── Observations (Inter-Agent Knowledge Base) ───────────
+export const observations = sqliteTable('observations', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  taskId: text('task_id').notNull(),
+  agentId: text('agent_id').notNull(),
+  type: text('type').notNull(), // 'pattern' | 'convention' | 'warning' | 'discovery'
+  content: text('content').notNull(),
+  relevantFiles: text('relevant_files').notNull().default('[]'),
+  confidence: real('confidence').notNull().default(0.5),
+  createdAt: text('created_at').notNull(),
 });
 
 // ── MCP Server Registry ──────────────────────────────────

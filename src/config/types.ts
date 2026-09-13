@@ -26,8 +26,46 @@ const McpServerConfigSchema = z.object({
   command: z.string().optional(),
   args: z.array(z.string()).default([]),
   url: z.string().optional(),
-  env: z.record(z.string()).default({}),
+  env: z.record(z.string(), z.string()).default({}),
   autoStart: z.boolean().default(false),
+});
+
+// Extract sub-schemas so we can compute their full defaults for zod v4
+const OrchestratorSchema = z.object({
+  maxConcurrentAgents: z.number().int().positive().default(3),
+  maxTotalBudgetUsd: z.number().positive().default(10.0),
+  autoRetry: z.boolean().default(true),
+  maxRetries: z.number().int().nonnegative().default(2),
+  validationEnabled: z.boolean().default(true),
+});
+
+const DatabaseSchema = z.object({
+  path: z.string().default('.orchestrator/data.db'),
+});
+
+const AgentsSchema = z.object({
+  templates: z.array(AgentTemplateConfigSchema).default([]),
+});
+
+const McpSchema = z.object({
+  servers: z.array(McpServerConfigSchema).default([]),
+});
+
+const DiscoverySchema = z.object({
+  enabled: z.boolean().default(true),
+  model: z.string().default('claude-sonnet-4-6'),
+  maxTurns: z.number().int().positive().default(15),
+});
+
+const GitSchema = z.object({
+  integrationBranch: z.string().default('main'),
+  worktreeDir: z.string().default('.orchestrator/worktrees'),
+  branchPrefix: z.string().default('orch/'),
+});
+
+const WebSchema = z.object({
+  port: z.number().int().default(3847),
+  host: z.string().default('localhost'),
 });
 
 export const ProjectConfigSchema = z.object({
@@ -35,34 +73,17 @@ export const ProjectConfigSchema = z.object({
     name: z.string(),
     rootPath: z.string().default('.'),
   }),
-  orchestrator: z.object({
-    maxConcurrentAgents: z.number().int().positive().default(3),
-    maxTotalBudgetUsd: z.number().positive().default(10.0),
-    autoRetry: z.boolean().default(true),
-    maxRetries: z.number().int().nonnegative().default(2),
-    validationEnabled: z.boolean().default(true),
-  }).default({}),
-  database: z.object({
-    path: z.string().default('.orchestrator/data.db'),
-  }).default({}),
-  agents: z.object({
-    templates: z.array(AgentTemplateConfigSchema).default([]),
-  }).default({}),
-  mcp: z.object({
-    servers: z.array(McpServerConfigSchema).default([]),
-  }).default({}),
-  git: z.object({
-    integrationBranch: z.string().default('main'),
-    worktreeDir: z.string().default('.orchestrator/worktrees'),
-    branchPrefix: z.string().default('orch/'),
-  }).default({}),
-  web: z.object({
-    port: z.number().int().default(3847),
-    host: z.string().default('localhost'),
-  }).default({}),
+  orchestrator: OrchestratorSchema.default(OrchestratorSchema.parse({})),
+  database: DatabaseSchema.default(DatabaseSchema.parse({})),
+  agents: AgentsSchema.default(AgentsSchema.parse({})),
+  mcp: McpSchema.default(McpSchema.parse({})),
+  discovery: DiscoverySchema.default(DiscoverySchema.parse({})),
+  git: GitSchema.default(GitSchema.parse({})),
+  web: WebSchema.default(WebSchema.parse({})),
 });
 
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 export type AgentTemplateConfig = z.infer<typeof AgentTemplateConfigSchema>;
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 export type AgentCapabilityConfig = z.infer<typeof AgentCapabilitySchema>;
+export type DiscoveryConfig = z.infer<typeof DiscoverySchema>;

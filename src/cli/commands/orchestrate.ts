@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import Table from 'cli-table3';
 import { TaskRepository } from '../../task/task-repository.js';
 import { ClaudeCliRuntime } from '../../agent/runtimes/claude-cli-runtime.js';
+import { ClaudeSdkRuntime } from '../../agent/runtimes/claude-sdk-runtime.js';
 import { Orchestrator, type OrchestratorDeps, type ProgressEvent } from '../../core/orchestrator.js';
 import { EventBus } from '../../events/event-bus.js';
 import { EventStore } from '../../events/event-store.js';
@@ -15,6 +16,9 @@ import { loadProjectContext } from '../helpers.js';
 import { formatTaskTable } from '../formatters.js';
 import type { Task } from '../../task/types.js';
 import type { AgentRuntime } from '../../agent/runtimes/runtime.js';
+import { WorktreeManager } from '../../git/worktree-manager.js';
+import { isGitRepo } from '../../git/git-utils.js';
+import { McpRegistry } from '../../mcp/mcp-registry.js';
 
 function askUser(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -64,7 +68,30 @@ export const orchestrateCommand = new Command('orchestrate')
     const taskRepo = new TaskRepository(db);
     const contextStore = new ContextStore(new ContextRepository(db));
     const cliRuntime = new ClaudeCliRuntime();
-    const runtimes = new Map<string, AgentRuntime>([['claude-cli', cliRuntime]]);
+    const sdkRuntime = new ClaudeSdkRuntime();
+    const runtimes = new Map<string, AgentRuntime>([
+      ['claude-sdk', sdkRuntime],
+      ['claude-cli', cliRuntime],
+    ]);
+
+    // Set up worktree manager (conditional on git repo)
+    let worktreeManager: WorktreeManager | undefined;
+    try {
+      if (await isGitRepo(rootPath)) {
+        worktreeManager = new WorktreeManager(db, {
+          projectId,
+          rootPath,
+          worktreeDir: config.git.worktreeDir,
+          branchPrefix: config.git.branchPrefix,
+          integrationBranch: config.git.integrationBranch,
+        });
+      }
+    } catch {
+      // Not a git repo, worktrees not available
+    }
+
+    // Set up MCP registry
+    const mcpRegistry = new McpRegistry(db);
 
     const deps: OrchestratorDeps = {
       db,
@@ -76,6 +103,8 @@ export const orchestrateCommand = new Command('orchestrate')
       eventStore,
       contextStore,
       taskRepo,
+      worktreeManager,
+      mcpRegistry,
     };
 
     const orchestrator = new Orchestrator(deps);

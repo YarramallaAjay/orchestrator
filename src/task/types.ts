@@ -39,6 +39,7 @@ export interface Task {
   acceptanceCriteria: string[];
   validationScript: string | null;
   tags: string[];
+  targetFiles: string[];
   estimatedEffort: EffortEstimate | null;
   createdAt: string;
   updatedAt: string;
@@ -66,6 +67,7 @@ export interface CreateTaskInput {
   acceptanceCriteria?: string[];
   validationScript?: string;
   tags?: string[];
+  targetFiles?: string[];
   estimatedEffort?: EffortEstimate;
   maxRetries?: number;
 }
