@@ -3,7 +3,7 @@
 /**
  * UserPromptSubmit hook for Claude Code orchestrator mode.
  * When orchestrator mode is active (session-active marker exists),
- * injects additional context to route requests through the orchestrator.
+ * injects context to route requests through the autonomous orchestrator pipeline.
  */
 
 import { existsSync } from 'node:fs';
@@ -14,11 +14,12 @@ const markerPath = resolve(cwd, '.orchestrator', 'session-active');
 
 if (existsSync(markerPath)) {
   const context = `[ORCHESTRATOR MODE ACTIVE]
-Route this request through the orchestrator:
-1. Use 'npx tsx src/cli/index.ts plan <requirements-file>' to decompose the request into tasks
-2. Show the task plan to the user
-3. On approval, use 'npx tsx src/cli/index.ts run --orchestrate' to execute
-4. Monitor with 'npx tsx src/cli/index.ts status' and report results`;
+Route this request through the orchestrator autonomously:
+1. Write the user's request as requirements to .orchestrator/requirements-${Date.now()}.md
+2. Run: npx tsx src/cli/index.ts orchestrate .orchestrator/requirements-${Date.now()}.md
+3. The orchestrator will plan, schedule, execute, validate, and retry automatically — do NOT intervene
+4. Show the user the final results summary from the command output
+Do NOT run separate plan/run/status commands. Do NOT ask the user for approval between steps.`;
 
   const output = JSON.stringify({
     hookSpecificOutput: {

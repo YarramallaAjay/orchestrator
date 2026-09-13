@@ -7,6 +7,7 @@ import { Executor } from './executor.js';
 import { Scheduler, type SchedulerConfig } from './scheduler.js';
 import { Planner } from './planner.js';
 import { Validator } from './validator.js';
+import { SessionManager, type SessionState } from './session-manager.js';
 import { EventBus } from '../events/event-bus.js';
 import { EventStore } from '../events/event-store.js';
 import { ContextStore } from '../context/context-store.js';
@@ -14,6 +15,30 @@ import { generateId } from '../util/id.js';
 import { logger } from '../util/logger.js';
 import type { ProjectConfig } from '../config/types.js';
 import type { Db } from '../db/connection.js';
+
+export type OrchestratorStage = 'planning' | 'scheduling' | 'executing' | 'validating' | 'completed';
+
+export interface ProgressEvent {
+  stage: OrchestratorStage;
+  message: string;
+  task?: Task;
+  tasksCompleted: number;
+  tasksFailed: number;
+  tasksRemaining: number;
+  totalCostUsd: number;
+}
+
+export interface OrchestratorResult {
+  success: boolean;
+  tasks: Task[];
+  completedTasks: Task[];
+  failedTasks: Task[];
+  cancelledTasks: Task[];
+  totalCostUsd: number;
+  durationMs: number;
+  sessionId: string;
+  summary: string;
+}
 
 export interface OrchestratorDeps {
   db: Db;
@@ -241,6 +266,109 @@ export class Orchestrator {
     }
 
     logger.info('Orchestration run complete');
+  }
+
+  /**
+   * Orchestrate: fully autonomous pipeline from requirements to results.
+   * Plans, schedules, executes, validates, retries — no user intervention needed.
+   */
+  async orchestrate(
+    requirements: string,
+    options: {
+      maxConcurrent?: number;
+      onProgress?: (event: ProgressEvent) => void;
+    } = {},
+  ): Promise<OrchestratorResult> {
+    const startTime = Date.now();
+    const sessionManager = new SessionManager(this.deps.rootPath);
+    const session = sessionManager.create(this.deps.projectId);
+
+    const emitProgress = (
+      stage: OrchestratorStage,
+      message: string,
+      task?: Task,
+    ) => {
+      options.onProgress?.({
+        stage,
+        message,
+        task,
+        tasksCompleted: session.completedTasks.length,
+        tasksFailed: session.failedTasks.length,
+        tasksRemaining: Math.max(0, totalPlanned - session.completedTasks.length - session.failedTasks.length),
+        totalCostUsd: session.totalCostUsd,
+      });
+    };
+
+    let totalPlanned = 0;
+
+    try {
+      // Phase 1: Planning
+      emitProgress('planning', 'Decomposing requirements into tasks...');
+      const planned = await this.plan(requirements);
+      totalPlanned = planned.length;
+      emitProgress('planning', `Planned ${totalPlanned} tasks`);
+
+      // Phase 2: Execution (schedule → execute → validate → retry loop)
+      emitProgress('executing', 'Starting autonomous execution...');
+
+      await this.run({
+        maxConcurrent: options.maxConcurrent,
+        onTaskComplete: (task) => {
+          sessionManager.markTaskCompleted(session, task.id, 0);
+          emitProgress('executing', `Completed: ${task.title}`, task);
+        },
+        onTaskFailed: (task, error) => {
+          sessionManager.markTaskFailed(session, task.id);
+          emitProgress('executing', `Failed: ${task.title} — ${error}`, task);
+        },
+      });
+
+      // Phase 3: Results
+      const allTasks = await this.deps.taskRepo.findByProject(this.deps.projectId);
+      const completed = allTasks.filter((t) => t.status === TaskStatus.COMPLETED);
+      const failed = allTasks.filter((t) => t.status === TaskStatus.FAILED);
+      const cancelled = allTasks.filter((t) => t.status === TaskStatus.CANCELLED);
+      const success = failed.length === 0 && cancelled.length === 0;
+
+      sessionManager.complete(session);
+
+      const durationMs = Date.now() - startTime;
+      const summary = `${completed.length}/${allTasks.length} tasks completed` +
+        (failed.length > 0 ? `, ${failed.length} failed` : '') +
+        (cancelled.length > 0 ? `, ${cancelled.length} cancelled` : '') +
+        ` in ${(durationMs / 1000).toFixed(1)}s` +
+        (session.totalCostUsd > 0 ? ` ($${session.totalCostUsd.toFixed(4)})` : '');
+
+      emitProgress('completed', summary);
+
+      return {
+        success,
+        tasks: allTasks,
+        completedTasks: completed,
+        failedTasks: failed,
+        cancelledTasks: cancelled,
+        totalCostUsd: session.totalCostUsd,
+        durationMs,
+        sessionId: session.sessionId,
+        summary,
+      };
+    } catch (error: any) {
+      session.status = 'failed';
+      sessionManager.save(session);
+
+      const durationMs = Date.now() - startTime;
+      return {
+        success: false,
+        tasks: [],
+        completedTasks: [],
+        failedTasks: [],
+        cancelledTasks: [],
+        totalCostUsd: session.totalCostUsd,
+        durationMs,
+        sessionId: session.sessionId,
+        summary: `Orchestration failed: ${error.message}`,
+      };
+    }
   }
 
   /**

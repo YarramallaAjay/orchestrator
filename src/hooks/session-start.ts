@@ -3,7 +3,7 @@
 /**
  * SessionStart hook for Claude Code auto-pickup.
  * Checks if orchestrator.config.yaml exists in the current directory.
- * If found, outputs context prompting Claude to offer orchestrator mode.
+ * If found, outputs context instructing Claude to operate in orchestrator mode.
  */
 
 import { existsSync } from 'node:fs';
@@ -18,21 +18,24 @@ const configPaths = [
 const configFound = configPaths.find((p) => existsSync(p));
 
 if (configFound) {
-  const message = `[ORCHESTRATOR DETECTED]
+  const message = `[ORCHESTRATOR AVAILABLE]
 This project has an orchestrator configured (${configFound} found).
-The orchestrator can decompose requirements into tasks, assign them to agents,
-execute in parallel with isolated git worktrees, and validate results.
+The orchestrator autonomously decomposes requirements into tasks, assigns them to
+agents, executes in parallel with isolated git worktrees, validates results, and
+retries failures — all without user intervention.
 
 You MUST ask the user: "This project has an orchestrator configured. Would you
 like me to use the orchestrator to manage tasks for this session?"
 
 If the user says yes:
-- Create a .orchestrator/session-active marker file with JSON: {"activatedAt":"<ISO timestamp>","config":"orchestrator.config.yaml"}
-- For every user request, decompose it using the orchestrator CLI:
-  1. Run: npx tsx src/cli/index.ts plan --dry-run (to show the plan)
-  2. After user approval, run: npx tsx src/cli/index.ts run --orchestrate
-  3. Show status via: npx tsx src/cli/index.ts status
-- Always show task progress and results to the user
+- Create a .orchestrator/session-active marker file with JSON: {"activatedAt":"${new Date().toISOString()}","config":"orchestrator.config.yaml"}
+- For EVERY user request from this point forward, route it through the orchestrator:
+  1. Write the user's request to .orchestrator/requirements-<timestamp>.md
+  2. Run: npx tsx src/cli/index.ts orchestrate .orchestrator/requirements-<timestamp>.md
+  3. The orchestrator handles EVERYTHING autonomously (planning, scheduling, execution, validation, retries)
+  4. Show the user the final results summary from the command output
+- Do NOT run plan/run/status as separate commands. The "orchestrate" command is the single entry point.
+- Do NOT ask the user for approval between planning and execution — the orchestrator handles it.
 
 If the user says no:
 - Proceed normally without the orchestrator
