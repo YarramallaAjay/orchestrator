@@ -12,6 +12,7 @@ import { registerContextRoutes } from './routes/context.js';
 import { registerWorktreeRoutes } from './routes/worktrees.js';
 import { registerReviewRoutes } from './routes/reviews.js';
 import { registerEvalRoutes } from './routes/evals.js';
+import { registerMetricsRoutes } from './routes/metrics.js';
 import { logger } from '../util/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,7 @@ export async function createWebServer(deps: WebServerDeps): Promise<FastifyInsta
   registerWorktreeRoutes(app, deps);
   registerReviewRoutes(app, deps);
   registerEvalRoutes(app, deps);
+  registerMetricsRoutes(app, deps);
 
   // Static dashboard files
   const staticPath = resolve(__dirname, 'static');

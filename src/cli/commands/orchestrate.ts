@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 import chalk from 'chalk';
 import Table from 'cli-table3';
 import { TaskRepository } from '../../task/task-repository.js';
@@ -11,13 +12,26 @@ import { ContextStore } from '../../context/context-store.js';
 import { ContextRepository } from '../../context/context-repository.js';
 import { SessionManager } from '../../core/session-manager.js';
 import { loadProjectContext } from '../helpers.js';
+import { formatTaskTable } from '../formatters.js';
+import type { Task } from '../../task/types.js';
 import type { AgentRuntime } from '../../agent/runtimes/runtime.js';
 
+function askUser(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase());
+    });
+  });
+}
+
 export const orchestrateCommand = new Command('orchestrate')
-  .description('Run full autonomous orchestration pipeline from requirements')
+  .description('Run full orchestration pipeline from requirements (with plan approval)')
   .argument('[requirements-file]', 'Path to requirements file (markdown, text, etc.)')
   .option('--inline <text>', 'Provide requirements as inline text')
   .option('--max-concurrent <n>', 'Maximum concurrent agents', '1')
+  .option('--auto-approve', 'Skip plan approval prompt (for programmatic use)')
   .option('--resume', 'Resume the last interrupted session')
   .action(async (requirementsFile, options) => {
     const ctx = loadProjectContext();
@@ -34,8 +48,7 @@ export const orchestrateCommand = new Command('orchestrate')
         process.exit(1);
       }
       console.log(chalk.yellow(`Resuming session ${latest.sessionId}...`));
-      // Resume runs remaining ready/pending tasks via orchestrator.run()
-      requirements = ''; // Not needed for resume — tasks are already in DB
+      requirements = '';
     } else if (options.inline) {
       requirements = options.inline;
     } else if (requirementsFile) {
@@ -74,12 +87,13 @@ export const orchestrateCommand = new Command('orchestrate')
       orchestrator.stop();
     });
 
-    console.log(chalk.bold('Starting autonomous orchestration...\n'));
+    console.log(chalk.bold('Starting orchestration...\n'));
 
     // Progress display
     const onProgress = (event: ProgressEvent) => {
       const stageIcons: Record<string, string> = {
         planning: '[PLAN]',
+        awaiting_approval: '[APPROVAL]',
         scheduling: '[SCHED]',
         executing: '[EXEC]',
         validating: '[VALID]',
@@ -99,10 +113,32 @@ export const orchestrateCommand = new Command('orchestrate')
       }
     };
 
+    // Plan approval callback
+    const onPlanReady = options.autoApprove
+      ? undefined
+      : async (tasks: Task[]): Promise<boolean> => {
+          console.log('');
+          console.log(chalk.bold('Task Plan:'));
+          console.log(formatTaskTable(tasks));
+          console.log('');
+          console.log(chalk.dim(`${tasks.length} tasks planned.`));
+          console.log('');
+
+          const answer = await askUser(chalk.yellow('Approve this plan and start execution? (y/n): '));
+          const approved = answer === 'y' || answer === 'yes';
+
+          if (!approved) {
+            console.log(chalk.gray('Plan rejected. No tasks will be executed.'));
+          } else {
+            console.log(chalk.green('Plan approved. Starting execution...\n'));
+          }
+
+          return approved;
+        };
+
     let result;
 
     if (options.resume) {
-      // Resume: just run remaining tasks, skip planning
       console.log(chalk.cyan('[RESUME] Running remaining tasks...\n'));
       await orchestrator.run({
         maxConcurrent,
@@ -123,11 +159,13 @@ export const orchestrateCommand = new Command('orchestrate')
         durationMs: 0,
         sessionId: 'resumed',
         summary: `${completed.length}/${allTasks.length} tasks completed`,
+        metrics: { totalInputTokens: 0, totalOutputTokens: 0, totalToolCalls: 0, totalTurns: 0 },
       };
     } else {
       result = await orchestrator.orchestrate(requirements, {
         maxConcurrent,
         onProgress,
+        onPlanReady,
       });
     }
 
@@ -135,7 +173,7 @@ export const orchestrateCommand = new Command('orchestrate')
     console.log('');
     const summaryTable = new Table({
       head: [chalk.bold('Metric'), chalk.bold('Value')],
-      colWidths: [25, 30],
+      colWidths: [25, 35],
     });
     summaryTable.push(
       ['Status', result.success ? chalk.green('SUCCESS') : chalk.red('FAILURE')],
@@ -145,6 +183,10 @@ export const orchestrateCommand = new Command('orchestrate')
       ['Cancelled', String(result.cancelledTasks.length)],
       ['Duration', `${(result.durationMs / 1000).toFixed(1)}s`],
       ['Cost', `$${result.totalCostUsd.toFixed(4)}`],
+      ['Input Tokens', result.metrics.totalInputTokens.toLocaleString()],
+      ['Output Tokens', result.metrics.totalOutputTokens.toLocaleString()],
+      ['Tool Calls', String(result.metrics.totalToolCalls)],
+      ['Turns', String(result.metrics.totalTurns)],
       ['Session', result.sessionId],
     );
     console.log(summaryTable.toString());

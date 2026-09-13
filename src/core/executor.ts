@@ -85,6 +85,9 @@ export class Executor {
         outputArtifacts: {},
         totalCostUsd: 0,
         turnsUsed: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        toolCalls: 0,
         sessionId: null,
         error: errorMsg,
       };

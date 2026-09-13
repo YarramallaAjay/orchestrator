@@ -43,6 +43,8 @@ export class ApiRuntime implements AgentRuntime {
     const messages: AgentMessage[] = [];
     let totalCost = 0;
     let turnsUsed = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     const conversationMessages: AnthropicMessage[] = [
       { role: 'user', content: params.prompt },
@@ -75,8 +77,8 @@ export class ApiRuntime implements AgentRuntime {
       turnsUsed = 1;
 
       // Calculate cost (approximate)
-      const inputTokens = result.usage?.input_tokens ?? 0;
-      const outputTokens = result.usage?.output_tokens ?? 0;
+      inputTokens = result.usage?.input_tokens ?? 0;
+      outputTokens = result.usage?.output_tokens ?? 0;
       totalCost = (inputTokens * 0.003 + outputTokens * 0.015) / 1000;
 
       // Extract text content
@@ -103,6 +105,9 @@ export class ApiRuntime implements AgentRuntime {
       outputArtifacts: {},
       totalCostUsd: totalCost,
       turnsUsed,
+      inputTokens,
+      outputTokens,
+      toolCalls: 0,
       sessionId,
     };
   }

@@ -39,6 +39,9 @@ export class ClaudeCliRuntime implements AgentRuntime {
     const messages: AgentMessage[] = [];
     let totalCost = 0;
     let turnsUsed = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let toolCallCount = 0;
     let lastSessionId: string | null = null;
     let buffer = '';
 
@@ -65,10 +68,16 @@ export class ClaudeCliRuntime implements AgentRuntime {
               messages.push(msg);
               yield msg;
             }
-            // Extract metadata from events
+            // Count tool calls
+            if (event.type === 'tool_use') {
+              toolCallCount++;
+            }
+            // Extract metadata from result events
             if (event.type === 'result') {
               totalCost = event.cost_usd ?? 0;
               turnsUsed = event.num_turns ?? 0;
+              inputTokens = event.input_tokens_used ?? event.input_tokens ?? 0;
+              outputTokens = event.output_tokens_used ?? event.output_tokens ?? 0;
               lastSessionId = event.session_id ?? null;
             }
           } catch {
@@ -86,9 +95,14 @@ export class ClaudeCliRuntime implements AgentRuntime {
             messages.push(msg);
             yield msg;
           }
+          if (event.type === 'tool_use') {
+            toolCallCount++;
+          }
           if (event.type === 'result') {
             totalCost = event.cost_usd ?? 0;
             turnsUsed = event.num_turns ?? 0;
+            inputTokens = event.input_tokens_used ?? event.input_tokens ?? 0;
+            outputTokens = event.output_tokens_used ?? event.output_tokens ?? 0;
             lastSessionId = event.session_id ?? null;
           }
         } catch {
@@ -123,6 +137,9 @@ export class ClaudeCliRuntime implements AgentRuntime {
       outputArtifacts: {},
       totalCostUsd: totalCost,
       turnsUsed,
+      inputTokens,
+      outputTokens,
+      toolCalls: toolCallCount,
       sessionId: lastSessionId,
       error: exitCode !== 0 ? `Process exited with code ${exitCode}` : undefined,
     };

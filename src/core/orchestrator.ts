@@ -7,16 +7,17 @@ import { Executor } from './executor.js';
 import { Scheduler, type SchedulerConfig } from './scheduler.js';
 import { Planner } from './planner.js';
 import { Validator } from './validator.js';
-import { SessionManager, type SessionState } from './session-manager.js';
+import { SessionManager, type SessionState, type TaskExecutionMetrics } from './session-manager.js';
 import { EventBus } from '../events/event-bus.js';
 import { EventStore } from '../events/event-store.js';
 import { ContextStore } from '../context/context-store.js';
 import { generateId } from '../util/id.js';
 import { logger } from '../util/logger.js';
+import { orchestratorSessions, taskMetrics } from '../db/schema.js';
 import type { ProjectConfig } from '../config/types.js';
 import type { Db } from '../db/connection.js';
 
-export type OrchestratorStage = 'planning' | 'scheduling' | 'executing' | 'validating' | 'completed';
+export type OrchestratorStage = 'planning' | 'awaiting_approval' | 'scheduling' | 'executing' | 'validating' | 'completed';
 
 export interface ProgressEvent {
   stage: OrchestratorStage;
@@ -26,6 +27,13 @@ export interface ProgressEvent {
   tasksFailed: number;
   tasksRemaining: number;
   totalCostUsd: number;
+}
+
+export interface OrchestratorMetrics {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalToolCalls: number;
+  totalTurns: number;
 }
 
 export interface OrchestratorResult {
@@ -38,6 +46,7 @@ export interface OrchestratorResult {
   durationMs: number;
   sessionId: string;
   summary: string;
+  metrics: OrchestratorMetrics;
 }
 
 export interface OrchestratorDeps {
@@ -64,6 +73,11 @@ export class Orchestrator {
   private validator: Validator;
   private isRunning = false;
   private abortController: AbortController | null = null;
+
+  // Per-orchestrate session tracking (set during orchestrate())
+  private activeSession: SessionState | null = null;
+  private activeSessionManager: SessionManager | null = null;
+  private activeSessionId: string | null = null;
 
   constructor(private deps: OrchestratorDeps) {
     this.taskGraph = new TaskGraph();
@@ -165,7 +179,7 @@ export class Orchestrator {
    */
   async run(options: {
     maxConcurrent?: number;
-    onTaskComplete?: (task: Task) => void;
+    onTaskComplete?: (task: Task, metrics: TaskExecutionMetrics) => void;
     onTaskFailed?: (task: Task, error: string) => void;
   } = {}): Promise<void> {
     if (this.isRunning) {
@@ -269,19 +283,32 @@ export class Orchestrator {
   }
 
   /**
-   * Orchestrate: fully autonomous pipeline from requirements to results.
-   * Plans, schedules, executes, validates, retries — no user intervention needed.
+   * Orchestrate: full pipeline from requirements to results.
+   * Plans tasks, optionally waits for approval, then executes autonomously.
    */
   async orchestrate(
     requirements: string,
     options: {
       maxConcurrent?: number;
       onProgress?: (event: ProgressEvent) => void;
+      onPlanReady?: (tasks: Task[]) => Promise<boolean>;
     } = {},
   ): Promise<OrchestratorResult> {
     const startTime = Date.now();
     const sessionManager = new SessionManager(this.deps.rootPath);
     const session = sessionManager.create(this.deps.projectId);
+    this.activeSession = session;
+    this.activeSessionManager = sessionManager;
+    this.activeSessionId = session.sessionId;
+
+    // Persist session to DB
+    this.deps.db.insert(orchestratorSessions).values({
+      id: session.sessionId,
+      projectId: this.deps.projectId,
+      requirements,
+      status: 'running',
+      startedAt: session.startedAt,
+    }).run();
 
     const emitProgress = (
       stage: OrchestratorStage,
@@ -300,6 +327,12 @@ export class Orchestrator {
     };
 
     let totalPlanned = 0;
+    const emptyMetrics: OrchestratorMetrics = {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalToolCalls: 0,
+      totalTurns: 0,
+    };
 
     try {
       // Phase 1: Planning
@@ -308,13 +341,37 @@ export class Orchestrator {
       totalPlanned = planned.length;
       emitProgress('planning', `Planned ${totalPlanned} tasks`);
 
-      // Phase 2: Execution (schedule → execute → validate → retry loop)
-      emitProgress('executing', 'Starting autonomous execution...');
+      // Phase 2: Plan approval (human-in-the-loop)
+      if (options.onPlanReady) {
+        emitProgress('awaiting_approval', `Awaiting approval for ${totalPlanned} tasks...`);
+        const approved = await options.onPlanReady(planned);
+        if (!approved) {
+          session.status = 'completed';
+          sessionManager.save(session);
+          const durationMs = Date.now() - startTime;
+          this.persistSessionToDb(session, durationMs, totalPlanned);
+          return {
+            success: false,
+            tasks: planned,
+            completedTasks: [],
+            failedTasks: [],
+            cancelledTasks: [],
+            totalCostUsd: 0,
+            durationMs,
+            sessionId: session.sessionId,
+            summary: 'Plan rejected by user',
+            metrics: emptyMetrics,
+          };
+        }
+      }
+
+      // Phase 3: Execution (schedule → execute → validate → retry loop)
+      emitProgress('executing', 'Starting execution...');
 
       await this.run({
         maxConcurrent: options.maxConcurrent,
-        onTaskComplete: (task) => {
-          sessionManager.markTaskCompleted(session, task.id, 0);
+        onTaskComplete: (task, taskMetricsData) => {
+          sessionManager.markTaskCompleted(session, task.id, taskMetricsData);
           emitProgress('executing', `Completed: ${task.title}`, task);
         },
         onTaskFailed: (task, error) => {
@@ -323,7 +380,7 @@ export class Orchestrator {
         },
       });
 
-      // Phase 3: Results
+      // Phase 4: Results
       const allTasks = await this.deps.taskRepo.findByProject(this.deps.projectId);
       const completed = allTasks.filter((t) => t.status === TaskStatus.COMPLETED);
       const failed = allTasks.filter((t) => t.status === TaskStatus.FAILED);
@@ -333,13 +390,26 @@ export class Orchestrator {
       sessionManager.complete(session);
 
       const durationMs = Date.now() - startTime;
+      const metrics: OrchestratorMetrics = {
+        totalInputTokens: session.totalInputTokens,
+        totalOutputTokens: session.totalOutputTokens,
+        totalToolCalls: session.totalToolCalls,
+        totalTurns: session.totalTurns,
+      };
+
       const summary = `${completed.length}/${allTasks.length} tasks completed` +
         (failed.length > 0 ? `, ${failed.length} failed` : '') +
         (cancelled.length > 0 ? `, ${cancelled.length} cancelled` : '') +
         ` in ${(durationMs / 1000).toFixed(1)}s` +
-        (session.totalCostUsd > 0 ? ` ($${session.totalCostUsd.toFixed(4)})` : '');
+        (session.totalCostUsd > 0 ? ` ($${session.totalCostUsd.toFixed(4)})` : '') +
+        ` | ${session.totalInputTokens + session.totalOutputTokens} tokens, ${session.totalToolCalls} tool calls, ${session.totalTurns} turns`;
 
       emitProgress('completed', summary);
+      this.persistSessionToDb(session, durationMs, totalPlanned);
+
+      this.activeSession = null;
+      this.activeSessionManager = null;
+      this.activeSessionId = null;
 
       return {
         success,
@@ -351,12 +421,19 @@ export class Orchestrator {
         durationMs,
         sessionId: session.sessionId,
         summary,
+        metrics,
       };
     } catch (error: any) {
       session.status = 'failed';
       sessionManager.save(session);
 
       const durationMs = Date.now() - startTime;
+      this.persistSessionToDb(session, durationMs, totalPlanned);
+
+      this.activeSession = null;
+      this.activeSessionManager = null;
+      this.activeSessionId = null;
+
       return {
         success: false,
         tasks: [],
@@ -367,6 +444,7 @@ export class Orchestrator {
         durationMs,
         sessionId: session.sessionId,
         summary: `Orchestration failed: ${error.message}`,
+        metrics: emptyMetrics,
       };
     }
   }
@@ -383,10 +461,11 @@ export class Orchestrator {
     task: Task,
     agentConfig: AgentConfig,
     options: {
-      onTaskComplete?: (task: Task) => void;
+      onTaskComplete?: (task: Task, metrics: TaskExecutionMetrics) => void;
       onTaskFailed?: (task: Task, error: string) => void;
     },
   ): Promise<void> {
+    const taskStartTime = Date.now();
     logger.info({ taskId: task.id, agent: agentConfig.id }, 'Executing task');
 
     await this.deps.taskRepo.transition(task.id, TaskStatus.RUNNING);
@@ -412,11 +491,24 @@ export class Orchestrator {
       additionalContext: context || undefined,
     });
 
+    const taskDurationMs = Date.now() - taskStartTime;
+    const execMetrics: TaskExecutionMetrics = {
+      costUsd: result.totalCostUsd,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      toolCalls: result.toolCalls,
+      turns: result.turnsUsed,
+      durationMs: taskDurationMs,
+    };
+
     // Validate
     if (this.deps.config.orchestrator.validationEnabled) {
       const validation = await this.validator.validate(task, result, this.deps.rootPath);
 
       if (!validation.passed) {
+        // Persist task metrics for this attempt
+        this.persistTaskMetrics(task, agentConfig.id, execMetrics, 'FAILED');
+
         // Check retry
         if (this.deps.config.orchestrator.autoRetry && task.attempt < task.maxRetries) {
           logger.info({ taskId: task.id, attempt: task.attempt + 1 }, 'Retrying failed task');
@@ -448,11 +540,13 @@ export class Orchestrator {
     }
 
     // Success
+    this.persistTaskMetrics(task, agentConfig.id, execMetrics, 'COMPLETED');
+
     await this.deps.taskRepo.transition(task.id, TaskStatus.COMPLETED);
     await this.deps.taskRepo.update(task.id, { outputArtifacts: result.outputArtifacts });
     task.status = TaskStatus.COMPLETED;
     this.taskGraph.updateTask(task);
-    options.onTaskComplete?.(task);
+    options.onTaskComplete?.(task, execMetrics);
 
     await this.deps.eventBus.publish({
       id: generateId('evt'),
@@ -465,6 +559,58 @@ export class Orchestrator {
 
     // Promote newly ready tasks
     await this.promoteReadyTasks();
+  }
+
+  private persistTaskMetrics(
+    task: Task,
+    agentId: string,
+    metrics: TaskExecutionMetrics,
+    status: string,
+  ): void {
+    try {
+      this.deps.db.insert(taskMetrics).values({
+        id: generateId('tm'),
+        sessionId: this.activeSessionId ?? '',
+        projectId: this.deps.projectId,
+        taskId: task.id,
+        agentId,
+        costUsd: metrics.costUsd,
+        inputTokens: metrics.inputTokens,
+        outputTokens: metrics.outputTokens,
+        toolCalls: metrics.toolCalls,
+        turns: metrics.turns,
+        durationMs: metrics.durationMs,
+        attempt: task.attempt,
+        status,
+        createdAt: new Date().toISOString(),
+      }).run();
+    } catch {
+      // Don't let metrics persistence fail the task
+    }
+  }
+
+  private persistSessionToDb(
+    session: SessionState,
+    durationMs: number,
+    tasksPlanned: number,
+  ): void {
+    try {
+      this.deps.db.update(orchestratorSessions).set({
+        status: session.status,
+        completedAt: new Date().toISOString(),
+        tasksPlanned,
+        tasksCompleted: session.completedTasks.length,
+        tasksFailed: session.failedTasks.length,
+        totalCostUsd: session.totalCostUsd,
+        totalInputTokens: session.totalInputTokens,
+        totalOutputTokens: session.totalOutputTokens,
+        totalToolCalls: session.totalToolCalls,
+        totalTurns: session.totalTurns,
+        durationMs,
+      }).run();
+    } catch {
+      // Don't let DB persistence fail the orchestration
+    }
   }
 
   private async promoteReadyTasks(): Promise<void> {

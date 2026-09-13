@@ -2,6 +2,15 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { logger } from '../util/logger.js';
 
+export interface TaskExecutionMetrics {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  toolCalls: number;
+  turns: number;
+  durationMs: number;
+}
+
 export interface SessionState {
   sessionId: string;
   projectId: string;
@@ -11,6 +20,10 @@ export interface SessionState {
   failedTasks: string[];
   agentSessions: Record<string, string>; // agentId -> Claude session ID
   totalCostUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalToolCalls: number;
+  totalTurns: number;
   status: 'running' | 'paused' | 'completed' | 'failed';
 }
 
@@ -39,6 +52,10 @@ export class SessionManager {
       failedTasks: [],
       agentSessions: {},
       totalCostUsd: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalToolCalls: 0,
+      totalTurns: 0,
       status: 'running',
     };
 
@@ -98,11 +115,15 @@ export class SessionManager {
   }
 
   /**
-   * Mark a task as completed in the session.
+   * Mark a task as completed in the session and accumulate metrics.
    */
-  markTaskCompleted(session: SessionState, taskId: string, costUsd: number): void {
+  markTaskCompleted(session: SessionState, taskId: string, metrics: TaskExecutionMetrics): void {
     session.completedTasks.push(taskId);
-    session.totalCostUsd += costUsd;
+    session.totalCostUsd += metrics.costUsd;
+    session.totalInputTokens += metrics.inputTokens;
+    session.totalOutputTokens += metrics.outputTokens;
+    session.totalToolCalls += metrics.toolCalls;
+    session.totalTurns += metrics.turns;
     this.save(session);
   }
 

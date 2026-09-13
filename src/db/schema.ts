@@ -133,6 +133,43 @@ export const worktrees = sqliteTable('worktrees', {
   mergedAt: text('merged_at'),
 });
 
+// ── Orchestrator Sessions ────────────────────────────────
+export const orchestratorSessions = sqliteTable('orchestrator_sessions', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  requirements: text('requirements'),
+  status: text('status').notNull().default('running'),
+  startedAt: text('started_at').notNull(),
+  completedAt: text('completed_at'),
+  tasksPlanned: integer('tasks_planned').notNull().default(0),
+  tasksCompleted: integer('tasks_completed').notNull().default(0),
+  tasksFailed: integer('tasks_failed').notNull().default(0),
+  totalCostUsd: real('total_cost_usd').notNull().default(0),
+  totalInputTokens: integer('total_input_tokens').notNull().default(0),
+  totalOutputTokens: integer('total_output_tokens').notNull().default(0),
+  totalToolCalls: integer('total_tool_calls').notNull().default(0),
+  totalTurns: integer('total_turns').notNull().default(0),
+  durationMs: integer('duration_ms').notNull().default(0),
+});
+
+// ── Task Metrics ─────────────────────────────────────────
+export const taskMetrics = sqliteTable('task_metrics', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  projectId: text('project_id').notNull(),
+  taskId: text('task_id').notNull(),
+  agentId: text('agent_id'),
+  costUsd: real('cost_usd').notNull().default(0),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  toolCalls: integer('tool_calls').notNull().default(0),
+  turns: integer('turns').notNull().default(0),
+  durationMs: integer('duration_ms').notNull().default(0),
+  attempt: integer('attempt').notNull().default(0),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
 // ── Eval Runs ────────────────────────────────────────────
 export const evalRuns = sqliteTable('eval_runs', {
   id: text('id').primaryKey(),

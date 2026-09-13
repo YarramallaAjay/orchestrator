@@ -12,6 +12,7 @@ import { configCommand } from './commands/config.js';
 import { evalCommand } from './commands/eval.js';
 import { hooksCommand } from './commands/hooks.js';
 import { orchestrateCommand } from './commands/orchestrate.js';
+import { metricsCommand } from './commands/metrics.js';
 
 export function createCli(): Command {
   const program = new Command('orch')
@@ -29,6 +30,7 @@ export function createCli(): Command {
   program.addCommand(serveCommand);
   program.addCommand(configCommand);
   program.addCommand(orchestrateCommand);
+  program.addCommand(metricsCommand);
   program.addCommand(evalCommand);
   program.addCommand(hooksCommand);
 

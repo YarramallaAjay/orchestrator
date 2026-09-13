@@ -13,13 +13,16 @@ const cwd = process.cwd();
 const markerPath = resolve(cwd, '.orchestrator', 'session-active');
 
 if (existsSync(markerPath)) {
+  const ts = Date.now();
   const context = `[ORCHESTRATOR MODE ACTIVE]
-Route this request through the orchestrator autonomously:
-1. Write the user's request as requirements to .orchestrator/requirements-${Date.now()}.md
-2. Run: npx tsx src/cli/index.ts orchestrate .orchestrator/requirements-${Date.now()}.md
-3. The orchestrator will plan, schedule, execute, validate, and retry automatically — do NOT intervene
-4. Show the user the final results summary from the command output
-Do NOT run separate plan/run/status commands. Do NOT ask the user for approval between steps.`;
+Route this request through the orchestrator:
+1. Write the user's request as requirements to .orchestrator/requirements-${ts}.md
+2. Run: npx tsx src/cli/index.ts orchestrate .orchestrator/requirements-${ts}.md
+3. The orchestrator will plan tasks, then show the plan and WAIT for user approval via interactive prompt
+4. After the user approves (y/n), the orchestrator executes autonomously (scheduling, execution, validation, retries)
+5. Show the user the final results summary including metrics (cost, tokens, tool calls, turns)
+Do NOT run separate plan/run/status commands. Let the CLI handle the interactive approval prompt.
+To skip approval: add --auto-approve flag.`;
 
   const output = JSON.stringify({
     hookSpecificOutput: {

@@ -15,6 +15,9 @@ export interface AgentRunResult {
   outputArtifacts: Record<string, unknown>;
   totalCostUsd: number;
   turnsUsed: number;
+  inputTokens: number;
+  outputTokens: number;
+  toolCalls: number;
   sessionId: string | null;
   error?: string;
 }
