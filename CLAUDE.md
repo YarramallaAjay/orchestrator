@@ -2,30 +2,32 @@
 
 ## What This Is
 
-A CLI tool that autonomously decomposes user requirements into tasks, assigns them to Claude Code agents running in isolated git worktrees, executes them in parallel, validates results, and retries failures. It includes human-in-the-loop plan approval and detailed performance metrics tracking.
+A CLI tool (`orch`) that autonomously decomposes user requirements into tasks, assigns them to Claude Code agents running in isolated git worktrees, executes them in parallel, validates results, and retries failures. It includes human-in-the-loop plan approval and detailed performance metrics tracking.
+
+Published as npm package: `dev-orchestrator`
 
 ## Quick Setup
 
 ```bash
-# 1. Install dependencies
-npm install
+# Install globally
+npm install -g dev-orchestrator
 
-# 2. Build
-npm run build
+# OR install as a dev dependency in your project
+npm install --save-dev dev-orchestrator
 
-# 3. Initialize in your project directory
+# Initialize orchestrator in your project
 cd /path/to/your/project
-npx tsx /path/to/orchestrator/src/cli/index.ts init
+npx orch init
 
-# 4. Install Claude Code hooks (auto-pickup)
-npx tsx /path/to/orchestrator/src/cli/index.ts hooks install
+# Install Claude Code hooks (auto-pickup)
+npx orch hooks install
 ```
 
 ## Claude Code Integration
 
 ### How Hooks Work
 
-After running `hooks install`, two hooks are registered in your Claude Code settings:
+After running `orch hooks install`, two hooks are registered in your project's `.claude/settings.json`:
 
 1. **SessionStart hook** — When you open Claude Code in a project with `orchestrator.config.yaml`, Claude detects the orchestrator and asks if you want to use it.
 
@@ -33,7 +35,7 @@ After running `hooks install`, two hooks are registered in your Claude Code sett
 
 ### Manual Hook Installation
 
-If automatic installation doesn't work, add these to `~/.claude/settings.json`:
+If automatic installation doesn't work, add these to your project's `.claude/settings.json`:
 
 ```json
 {
@@ -44,7 +46,7 @@ If automatic installation doesn't work, add these to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "npx tsx /path/to/orchestrator/src/hooks/session-start.ts"
+            "command": "npx orch-hook-session-start"
           }
         ]
       }
@@ -55,7 +57,7 @@ If automatic installation doesn't work, add these to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "npx tsx /path/to/orchestrator/src/hooks/prompt-intercept.ts"
+            "command": "npx orch-hook-prompt-intercept"
           }
         ]
       }
@@ -64,27 +66,25 @@ If automatic installation doesn't work, add these to `~/.claude/settings.json`:
 }
 ```
 
-Replace `/path/to/orchestrator` with the actual path to this repository.
-
 ## Usage
 
 ### Single Command Pipeline
 
 ```bash
 # From requirements file (interactive plan approval)
-orch orchestrate requirements.md
+npx orch orchestrate requirements.md
 
 # Inline requirements
-orch orchestrate --inline "Add user authentication with JWT"
+npx orch orchestrate --inline "Add user authentication with JWT"
 
 # Skip approval (for CI/automation)
-orch orchestrate --auto-approve requirements.md
+npx orch orchestrate --auto-approve requirements.md
 
 # Run multiple agents in parallel
-orch orchestrate --max-concurrent 3 requirements.md
+npx orch orchestrate --max-concurrent 3 requirements.md
 
 # Resume an interrupted session
-orch orchestrate --resume
+npx orch orchestrate --resume
 ```
 
 ### Plan Approval Flow
@@ -100,16 +100,16 @@ orch orchestrate --resume
 
 ```bash
 # Project-level summary (all sessions aggregated)
-orch metrics
+npx orch metrics
 
 # List all sessions
-orch metrics sessions
+npx orch metrics sessions
 
 # Detailed session view with per-task breakdown
-orch metrics session <session-id>
+npx orch metrics session <session-id>
 
 # Per-task metrics for a session
-orch metrics tasks <session-id>
+npx orch metrics tasks <session-id>
 ```
 
 Metrics tracked per task and per session:
@@ -122,16 +122,18 @@ Metrics tracked per task and per session:
 ### Other Commands
 
 ```bash
-orch task list              # List all tasks
-orch task show <id>         # Show task details
-orch status                 # Project status overview
-orch agent list             # List configured agents
-orch context list           # List shared context entries
-orch worktree list          # List git worktrees
-orch serve                  # Start web dashboard
-orch eval run               # Run evaluation scenarios
-orch hooks status           # Check hook installation status
+npx orch task list              # List all tasks
+npx orch task show <id>         # Show task details
+npx orch status                 # Project status overview
+npx orch agent list             # List configured agents
+npx orch context list           # List shared context entries
+npx orch worktree list          # List git worktrees
+npx orch serve                  # Start web dashboard
+npx orch eval run               # Run evaluation scenarios
+npx orch hooks status           # Check hook installation status
 ```
+
+If installed globally (`npm i -g dev-orchestrator`), you can omit `npx` and use `orch` directly.
 
 ## Architecture
 

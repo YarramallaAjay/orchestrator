@@ -1,12 +1,20 @@
 {
-  "name": "orchestrator",
+  "name": "dev-orchestrator",
   "version": "0.1.0",
-  "description": "Reusable multi-agent development orchestrator framework",
+  "description": "Multi-agent development orchestrator — autonomous task planning, execution, and validation with Claude Code integration",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
-    "orch": "dist/index.js"
+    "orch": "dist/index.js",
+    "orch-hook-session-start": "dist/hooks/session-start.js",
+    "orch-hook-prompt-intercept": "dist/hooks/prompt-intercept.js"
   },
+  "files": [
+    "dist",
+    "CLAUDE.md",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
@@ -15,7 +23,25 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "orchestrator",
+    "multi-agent",
+    "claude",
+    "claude-code",
+    "automation",
+    "task-runner",
+    "ai-agent"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YarramallaAjay/orchestrator.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.269",

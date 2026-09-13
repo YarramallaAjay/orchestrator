@@ -10,10 +10,14 @@ function getSettingsPath(cwd: string): string {
   return resolve(cwd, '.claude', 'settings.json');
 }
 
-function getModulePath(): string {
-  // Resolve the path to the hooks relative to this package
-  const hookDir = resolve(dirname(new URL(import.meta.url).pathname), '..', '..', 'hooks');
-  return hookDir;
+function resolveHookCommand(hookName: string): string {
+  // When installed as npm package, use the bin commands directly via npx
+  // This avoids absolute path issues across different machines
+  const binMap: Record<string, string> = {
+    'session-start': 'orch-hook-session-start',
+    'prompt-intercept': 'orch-hook-prompt-intercept',
+  };
+  return binMap[hookName] ?? hookName;
 }
 
 function readSettings(settingsPath: string): Record<string, any> {
@@ -34,13 +38,15 @@ hooksCommand
   .action(async () => {
     const cwd = process.cwd();
     const settingsPath = getSettingsPath(cwd);
-    const hookDir = getModulePath();
 
     const settings = readSettings(settingsPath);
 
     if (!settings.hooks) {
       settings.hooks = {};
     }
+
+    const sessionStartCmd = resolveHookCommand('session-start');
+    const promptInterceptCmd = resolveHookCommand('prompt-intercept');
 
     // SessionStart hook
     settings.hooks.SessionStart = [
@@ -49,7 +55,7 @@ hooksCommand
         hooks: [
           {
             type: 'command',
-            command: `node ${resolve(hookDir, 'session-start.js')}`,
+            command: `npx ${sessionStartCmd}`,
           },
         ],
       },
@@ -62,7 +68,7 @@ hooksCommand
         hooks: [
           {
             type: 'command',
-            command: `node ${resolve(hookDir, 'prompt-intercept.js')}`,
+            command: `npx ${promptInterceptCmd}`,
           },
         ],
       },
