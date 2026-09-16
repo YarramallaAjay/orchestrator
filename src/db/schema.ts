@@ -197,6 +197,20 @@ export const observations = sqliteTable('observations', {
   createdAt: text('created_at').notNull(),
 });
 
+// ── Cross-Session Memory ─────────────────────────────────
+export const memories = sqliteTable('memories', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  category: text('category').notNull(), // 'convention' | 'pattern' | 'decision' | 'preference' | 'warning'
+  key: text('key').notNull(),
+  content: text('content').notNull(),
+  confidence: real('confidence').notNull().default(0.5),
+  source: text('source').notNull(), // session ID or agent ID
+  lastAccessedAt: text('last_accessed_at').notNull(),
+  accessCount: integer('access_count').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+});
+
 // ── MCP Server Registry ──────────────────────────────────
 export const mcpServers = sqliteTable('mcp_servers', {
   id: text('id').primaryKey(),

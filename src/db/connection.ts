@@ -201,6 +201,19 @@ export function initializeDb(db: Db) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      key TEXT NOT NULL,
+      content TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      source TEXT NOT NULL,
+      last_accessed_at TEXT NOT NULL,
+      access_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS eval_runs (
       id TEXT PRIMARY KEY,
       scenario_name TEXT NOT NULL,

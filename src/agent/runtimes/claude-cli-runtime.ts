@@ -1,8 +1,9 @@
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { accessSync, constants, writeFileSync, unlinkSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AgentConfig } from '../types.js';
 import type { AgentRuntime, AgentMessage, AgentRunResult } from './runtime.js';
+import { findClaudeBinary, buildClaudeEnv } from '../../util/claude-binary.js';
 
 /**
  * Agent runtime that spawns `claude` CLI processes.
@@ -25,11 +26,11 @@ export class ClaudeCliRuntime implements AgentRuntime {
     mcpServers?: Record<string, unknown>;
   }): AsyncGenerator<AgentMessage, AgentRunResult, undefined> {
     const args = this.buildArgs(params);
-    const claudePath = this.findClaudeBinary();
+    const claudePath = findClaudeBinary();
 
     const proc = spawn(claudePath, args, {
       cwd: params.cwd,
-      env: this.buildChildEnv(params.config.env),
+      env: buildClaudeEnv(params.config.env, { agentMode: true }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -172,7 +173,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const proc = spawn(this.findClaudeBinary(), ['--version'], {
+      const proc = spawn(findClaudeBinary(), ['--version'], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       return new Promise((resolve) => {
@@ -191,55 +192,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
     }
   }
 
-  private findClaudeBinary(): string {
-    // Strategy 1: Local node_modules/.bin/claude
-    const localPath = resolve('node_modules', '.bin', 'claude');
-    if (this.isExecutable(localPath)) return localPath;
-
-    // Strategy 2: which/where to find globally installed claude
-    try {
-      const cmd = process.platform === 'win32' ? 'where' : 'which';
-      const result = execFileSync(cmd, ['claude'], { encoding: 'utf-8' }).trim();
-      if (result) return result.split('\n')[0]!;
-    } catch { /* not found via which */ }
-
-    // Strategy 3: Common global install paths
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
-    const globalPaths = [
-      resolve(home, '.npm', 'bin', 'claude'),
-      '/usr/local/bin/claude',
-      '/opt/homebrew/bin/claude',
-    ];
-    for (const p of globalPaths) {
-      if (this.isExecutable(p)) return p;
-    }
-
-    // Fallback: bare 'claude', let PATH resolve it
-    return 'claude';
-  }
-
-  private isExecutable(path: string): boolean {
-    try {
-      accessSync(path, constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private buildChildEnv(configEnv?: Record<string, string>): Record<string, string> {
-    const env = { ...process.env } as Record<string, string>;
-    // Strip env vars that block Claude CLI from running as a subprocess
-    delete env['CLAUDE_CODE'];
-    delete env['CLAUDE_CODE_ENTRYPOINT'];
-    // Mark as orchestrator agent subprocess so hooks skip themselves
-    env['ORCH_AGENT_MODE'] = '1';
-    // Apply user-configured env overrides
-    if (configEnv) {
-      Object.assign(env, configEnv);
-    }
-    return env;
-  }
+  // findClaudeBinary(), isExecutable(), and buildClaudeEnv() moved to src/util/claude-binary.ts
 
   private buildArgs(params: {
     prompt: string;

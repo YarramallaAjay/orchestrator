@@ -13,11 +13,12 @@ import { evalCommand } from './commands/eval.js';
 import { hooksCommand } from './commands/hooks.js';
 import { orchestrateCommand } from './commands/orchestrate.js';
 import { metricsCommand } from './commands/metrics.js';
+import { wrapCommand } from './commands/wrap.js';
 
 export function createCli(): Command {
   const program = new Command('orch')
     .description('Multi-Agent Development Orchestrator')
-    .version('0.1.0');
+    .version('0.4.0');
 
   program.addCommand(initCommand);
   program.addCommand(taskCommand);
@@ -33,6 +34,7 @@ export function createCli(): Command {
   program.addCommand(metricsCommand);
   program.addCommand(evalCommand);
   program.addCommand(hooksCommand);
+  program.addCommand(wrapCommand);
 
   return program;
 }
