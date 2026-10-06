@@ -461,7 +461,9 @@ src/
 │       └── parser.ts                         # YAML + Markdown (.md frontmatter) agent parsers
 │
 ├── cli/
-│   └── index.ts                              # Main CLI entry (platform commands + legacy subcommand)
+│   ├── index.ts                              # Main CLI entry (platform commands + grill-me)
+│   └── commands/
+│       └── grill-me.ts                       # Socratic grilling session (standalone)
 │
 └── util/
     ├── errors.ts                             # Error hierarchy (OrchestratorError, CycleDetectedError, etc.)
@@ -757,14 +759,14 @@ runtimes:
 
 ### Completed (M1–M4)
 
-| Milestone | Components | Tests |
-|-----------|-----------|-------|
-| **M1: Hello World** | Platform types, config schema, Claude Code adapter, KV store, event bus, execution engine, agent builder SDK, CLI (init/run/status) | 36 |
-| **M2: Memory & Multi-Step** | DAG scheduler, pipeline runner, document store, memory manager, middleware chain (retry/timeout/logging), workflow orchestrator | 61 |
-| **M3: Multi-Runtime** | API adapter, CLI adapter, agent parser (.yaml + .md), runtime resolver, workflow builder SDK | 20 |
-| **M4: Platform** | Adapter registry (all 3 adapters), Platform class wiring, CLI commands (workflow/agent), plugin system | 11 |
+| Milestone | Components |
+|-----------|-----------|
+| **M1: Hello World** | Platform types, config schema, Claude Code adapter, KV store, event bus, execution engine, agent builder SDK, CLI (init/run/status) |
+| **M2: Memory & Multi-Step** | DAG scheduler, pipeline runner, document store, memory manager, middleware chain (retry/timeout/logging), workflow orchestrator |
+| **M3: Multi-Runtime** | API adapter, CLI adapter, agent parser (.yaml + .md), runtime resolver, workflow builder SDK |
+| **M4: Platform** | Adapter registry (all 3 adapters), Platform class wiring, CLI commands (workflow/agent), plugin system |
 
-**Total: 254 tests passing across 29 test files.**
+**Total: 128 tests passing across 13 test files.**
 
 ### Not Yet Implemented
 
@@ -779,19 +781,19 @@ runtimes:
 
 ---
 
-## Component Migration Map (from Legacy)
+## Interactive Diagrams
 
-| Current module | Status | New location |
-|---|---|---|
-| `TaskGraph` (DAG) | **Reshaped** → `DAGScheduler` | `src/layer3-engine/composition/dag-scheduler.ts` |
-| `EventBus` | **Kept** + new platform bus | `src/layer2-core/events/event-bus.ts` |
-| `ContextStore` | **Replaced** → Document Store | `src/layer2-core/memory/doc-store.ts` |
-| `ClaudeSdkRuntime` | **Reshaped** → Claude Code adapter | `src/layer1-adapters/claude-code/adapter.ts` |
-| `Scheduler` | **Reshaped** → pluggable interface | `src/layer3-engine/composition/scheduler-interface.ts` |
-| `Orchestrator` | **Rewritten** → Workflow Orchestrator | `src/layer3-engine/composition/workflow-orchestrator.ts` |
-| `Executor` | **Reshaped** → Execution Engine | `src/layer3-engine/execution/engine.ts` |
-| `CLI (Commander)` | **Extended** → platform commands + legacy subcommand | `src/layer4-surface/cli/` |
-| `Config (Zod)` | **Extended** → platform config schema | `src/platform/config/schema.ts` |
+Interactive HTML diagrams are available in `.archify/`:
+
+| Diagram | File | Description |
+|---------|------|-------------|
+| Platform Architecture | `.archify/architecture-platform-overview-20261006-120000/orchestrator-architecture.html` | Component overview across all 4 layers with boundaries and connections |
+| Request Execution Workflow | `.archify/workflow-request-execution-20261006-120100/request-execution.html` | How a request flows from CLI through engine to runtime adapter |
+| DAG Workflow Sequence | `.archify/sequence-dag-workflow-20261006-120200/dag-workflow-sequence.html` | Sequence of messages during DAG workflow execution |
+| Memory & Events Dataflow | `.archify/dataflow-memory-events-20261006-120300/memory-events-dataflow.html` | Data flow between producers, transport, and consumers |
+| Node State Lifecycle | `.archify/lifecycle-workflow-node-20261006-120400/workflow-node-lifecycle.html` | State transitions for workflow nodes (pending → running → completed/failed) |
+
+Open any HTML file in a browser to explore the interactive diagram.
 
 ---
 
