@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "DAG Workflow Execution Sequence",
+    "output": ".archify/sequence-dag-workflow-20261006-120200/dag-workflow-sequence.html",
+    "viewBox": [1080, 610],
+    "column_fit": "spread",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    { "id": "caller", "type": "external", "label": "Caller", "sublabel": "CLI or SDK" },
+    { "id": "orchestrator", "type": "backend", "label": "Orchestrator", "sublabel": "workflow driver" },
+    { "id": "dag", "type": "backend", "label": "DAG Scheduler", "sublabel": "topo sort" },
+    { "id": "engine", "type": "backend", "label": "Engine", "sublabel": "dispatch" },
+    { "id": "bus", "type": "messagebus", "label": "Event Bus", "sublabel": "pub/sub" },
+    { "id": "mem", "type": "database", "label": "Memory", "sublabel": "scoped stores" }
+  ],
+  "segments": [
+    { "from": 160, "to": 240, "label": "Setup" },
+    { "from": 250, "to": 410, "label": "Dispatch loop" },
+    { "from": 420, "to": 500, "label": "Completion" }
+  ],
+  "messages": [
+    { "id": "call-run", "from": "caller", "to": "orchestrator", "y": 170, "label": "runWorkflow(def)", "variant": "emphasis" },
+    { "id": "build-dag", "from": "orchestrator", "to": "dag", "y": 205, "label": "build DAG", "variant": "default" },
+
+    { "id": "get-batch", "from": "orchestrator", "to": "dag", "y": 260, "label": "getNextBatch()", "variant": "emphasis" },
+    { "id": "batch-ready", "from": "dag", "to": "orchestrator", "y": 295, "label": "ready nodes", "variant": "return" },
+    { "id": "dispatch-node", "from": "orchestrator", "to": "engine", "y": 330, "label": "execute(request)", "variant": "emphasis" },
+    { "id": "engine-result", "from": "engine", "to": "orchestrator", "y": 365, "label": "ExecutionResult", "variant": "return" },
+    { "id": "step-done", "from": "orchestrator", "to": "bus", "y": 400, "label": "step.completed", "variant": "dashed" },
+
+    { "id": "cleanup", "from": "orchestrator", "to": "mem", "y": 440, "label": "cleanupWorkflow()", "variant": "security" },
+    { "id": "emit-done", "from": "orchestrator", "to": "bus", "y": 475, "label": "workflow.completed", "variant": "dashed" },
+    { "id": "return-result", "from": "orchestrator", "to": "caller", "y": 490, "label": "WorkflowResult", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "orchestrator", "from": 168, "to": 496, "type": "backend" },
+    { "participant": "dag", "from": 203, "to": 211, "type": "backend" },
+    { "participant": "dag", "from": 258, "to": 301, "type": "backend" },
+    { "participant": "engine", "from": 328, "to": 371, "type": "backend" },
+    { "participant": "bus", "from": 398, "to": 406, "type": "messagebus" },
+    { "participant": "bus", "from": 473, "to": 481, "type": "messagebus" },
+    { "participant": "mem", "from": 438, "to": 446, "type": "database" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Dispatch Loop", "items": ["Orchestrator polls DAG for ready nodes each iteration", "Nodes with met dependencies are dispatched in parallel", "Dependency context is built from upstream outputs"] },
+    { "dot": "cyan", "title": "Event Lifecycle", "items": ["Each step publishes workflow.step.completed", "workflow.completed emitted after all nodes finish"] },
+    { "dot": "rose", "title": "Memory Cleanup", "items": ["cleanupWorkflow() clears ephemeral scopes on completion", "Global and project scopes persist across workflows"] }
+  ]
+}

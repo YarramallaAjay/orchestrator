@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Memory and Event Data Flow",
+    "output": ".archify/dataflow-memory-events-20261006-120300/memory-events-dataflow.html",
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "Producers" },
+    { "label": "Transport" },
+    { "label": "Consumers" }
+  ],
+  "nodes": [
+    { "id": "orchestrator", "type": "backend", "label": "Orchestrator", "sublabel": "lifecycle events", "stage": 0, "row": 0, "tag": "workflow" },
+    { "id": "agent", "type": "cloud", "label": "Agent Runtime", "sublabel": "output + results", "stage": 0, "row": 1, "tag": "execution" },
+    { "id": "eventbus", "type": "messagebus", "label": "Event Bus", "sublabel": "glob pub/sub", "stage": 1, "row": 0, "tag": "wildcard" },
+    { "id": "mem-mgr", "type": "database", "label": "Memory Manager", "sublabel": "KV + Doc Store", "stage": 1, "row": 1, "tag": "4 scopes" },
+    { "id": "handlers", "type": "backend", "label": "Event Handlers", "sublabel": "reactive logic", "stage": 2, "row": 0, "tag": "listeners" },
+    { "id": "downstream", "type": "backend", "label": "Downstream Agent", "sublabel": "reads dep context", "stage": 2, "row": 1, "tag": "coordinated" }
+  ],
+  "flows": [
+    { "id": "orch-events", "from": "orchestrator", "to": "eventbus", "label": "workflow events", "classification": "lifecycle", "variant": "dashed" },
+    { "id": "agent-memory", "from": "agent", "to": "mem-mgr", "label": "store output", "classification": "output", "variant": "emphasis" },
+    { "id": "events-handlers", "from": "eventbus", "to": "handlers", "label": "pattern match", "classification": "dispatch" },
+    { "id": "mem-downstream", "from": "mem-mgr", "to": "downstream", "label": "shared KV read", "classification": "coordination", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Data Producers", "items": ["Orchestrator emits workflow lifecycle events to Event Bus", "Agent runtimes store outputs and context in Memory Manager"] },
+    { "dot": "cyan", "title": "Transport Layer", "items": ["Event Bus routes events via glob-style wildcard pattern matching", "Memory Manager routes writes across 4 scope levels: global, project, workflow, agent"] },
+    { "dot": "rose", "title": "Consumers", "items": ["Event handlers subscribe for reactive updates and monitoring", "Downstream agents read shared workflow KV for dependency context"] }
+  ]
+}

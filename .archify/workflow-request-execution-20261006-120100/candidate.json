@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Request Execution Workflow",
+    "quality_profile": "showcase",
+    "output": ".archify/workflow-request-execution-20261006-120100/request-execution.html"
+  },
+  "lanes": [
+    { "id": "surface", "label": "User Surface" },
+    { "id": "engine", "label": "Platform + Engine" },
+    { "id": "runtime", "label": "Runtime Adapters" }
+  ],
+  "phases": [
+    { "id": "init", "label": "Initialize", "fromCol": 0, "toCol": 1 },
+    { "id": "resolve", "label": "Resolve + dispatch", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "execute", "label": "Execute + return", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "middleware-group", "label": "Middleware chain", "lane": "engine", "fromCol": 3, "toCol": 4, "variant": "emphasis" }
+  ],
+  "mainPath": ["developer", "cli-cmd", "platform-init", "mw-chain", "exec-engine", "adapter-run", "result"],
+  "nodes": [
+    { "id": "developer", "lane": "surface", "col": 0, "type": "external", "label": "Developer", "sublabel": "CLI command", "width": 132 },
+    { "id": "cli-cmd", "lane": "surface", "col": 1, "type": "frontend", "label": "CLI Parser", "sublabel": "Commander.js", "width": 132 },
+    { "id": "result", "lane": "surface", "col": 5, "type": "frontend", "label": "Stream Output", "sublabel": "metrics + files", "width": 132 },
+    { "id": "platform-init", "lane": "engine", "col": 2, "type": "backend", "label": "Platform", "sublabel": "load config", "tag": "entry point", "width": 132 },
+    { "id": "mw-chain", "lane": "engine", "col": 3, "type": "security", "label": "Middleware", "sublabel": "log + timeout + retry", "tag": "chain", "width": 132 },
+    { "id": "exec-engine", "lane": "engine", "col": 4, "type": "backend", "label": "Execution Engine", "sublabel": "dispatch request", "width": 132 },
+    { "id": "events", "lane": "engine", "col": 5, "type": "messagebus", "label": "Event Bus", "sublabel": "publish events", "width": 132 },
+    { "id": "registry", "lane": "runtime", "col": 3, "type": "backend", "label": "Adapter Registry", "sublabel": "factory create", "width": 132 },
+    { "id": "adapter-run", "lane": "runtime", "col": 4, "type": "cloud", "label": "Runtime Adapter", "sublabel": "Claude / API / CLI", "tag": "streaming", "width": 132 }
+  ],
+  "edges": [
+    { "id": "dev-cli", "from": "developer", "to": "cli-cmd" },
+    { "id": "cli-platform", "from": "cli-cmd", "to": "platform-init", "label": "parse args", "variant": "emphasis" },
+    { "id": "platform-mw", "from": "platform-init", "to": "mw-chain", "label": "resolve + wrap", "variant": "emphasis" },
+    { "id": "mw-exec", "from": "mw-chain", "to": "exec-engine", "label": "next()" },
+    { "id": "mw-registry", "from": "mw-chain", "to": "registry", "label": "create adapter", "variant": "dashed", "role": "branch" },
+    { "id": "exec-adapter", "from": "exec-engine", "to": "adapter-run", "label": "execute(input)", "variant": "emphasis" },
+    { "id": "adapter-result", "from": "adapter-run", "to": "result", "label": "RuntimeEvent stream", "variant": "emphasis", "role": "return" },
+    { "id": "exec-events", "from": "exec-engine", "to": "events", "label": "emit events", "variant": "dashed", "role": "async" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Request Path", "items": ["CLI parses command, Platform loads config and resolves runtime", "Middleware chain wraps execution with logging, timeout, retry"] },
+    { "dot": "emerald", "title": "Execution", "items": ["Engine creates adapter via registry, dispatches to runtime", "Adapter streams RuntimeEvents back to CLI for live output"] },
+    { "dot": "rose", "title": "Observability", "items": ["Event Bus receives execution lifecycle events asynchronously", "Middleware publishes agent.started, agent.completed events"] }
+  ]
+}

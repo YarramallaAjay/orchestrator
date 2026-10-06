@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Orchestrator Platform Architecture",
+    "output": ".archify/architecture-platform-overview-20261006-120000/orchestrator-architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "Developer", "sublabel": "CLI / SDK / YAML", "pos": [40, 240], "size": [120, 60] },
+    { "id": "cli", "type": "frontend", "label": "CLI", "sublabel": "Commander.js", "pos": [240, 140], "size": [120, 60] },
+    { "id": "sdk", "type": "frontend", "label": "SDK Builders", "sublabel": "Agent + Workflow", "pos": [240, 240], "size": [120, 60] },
+    { "id": "loader", "type": "frontend", "label": "Agent Loader", "sublabel": "YAML + Markdown", "pos": [240, 340], "size": [120, 60] },
+    { "id": "platform", "type": "backend", "label": "Platform", "sublabel": "entry point", "pos": [500, 240], "size": [130, 60], "tag": "run / runWorkflow" },
+    { "id": "resolver", "type": "backend", "label": "Runtime Resolver", "sublabel": "capability match", "pos": [500, 80], "size": [130, 60] },
+    { "id": "middleware", "type": "security", "label": "Middleware", "sublabel": "retry + timeout + log", "pos": [730, 80], "size": [130, 64], "tag": "chain" },
+    { "id": "engine", "type": "backend", "label": "Execution Engine", "sublabel": "dispatch to adapter", "pos": [730, 240], "size": [130, 60] },
+    { "id": "workflow", "type": "backend", "label": "Workflow Orchestrator", "sublabel": "DAG dispatch", "pos": [500, 420], "size": [140, 60] },
+    { "id": "dag", "type": "backend", "label": "DAG Scheduler", "sublabel": "topo sort + priority", "pos": [730, 420], "size": [130, 60] },
+    { "id": "pipeline", "type": "backend", "label": "Pipeline Runner", "sublabel": "sequential steps", "pos": [500, 520], "size": [130, 60] },
+    { "id": "registry", "type": "backend", "label": "Adapter Registry", "sublabel": "factory pattern", "pos": [1000, 80], "size": [130, 60] },
+    { "id": "claude", "type": "cloud", "label": "Claude Code", "sublabel": "Agent SDK", "pos": [1000, 240], "size": [130, 60], "tag": "primary" },
+    { "id": "apiadapter", "type": "cloud", "label": "API Adapter", "sublabel": "OpenAI / Anthropic", "pos": [1000, 340], "size": [130, 60] },
+    { "id": "cliadapter", "type": "cloud", "label": "CLI Adapter", "sublabel": "shell commands", "pos": [1000, 440], "size": [130, 60] },
+    { "id": "eventbus", "type": "messagebus", "label": "Event Bus", "sublabel": "pub/sub + wildcards", "pos": [180, 520], "size": [130, 60] },
+    { "id": "memory", "type": "database", "label": "Memory Manager", "sublabel": "4 scopes", "pos": [180, 640], "size": [130, 60] },
+    { "id": "kvstore", "type": "database", "label": "KV Store", "sublabel": "fast coordination", "pos": [40, 740], "size": [130, 60] },
+    { "id": "docstore", "type": "database", "label": "Document Store", "sublabel": "versioned context", "pos": [240, 740], "size": [130, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Layer 4: User Surface", "wraps": ["cli", "sdk", "loader"] },
+    { "kind": "region", "label": "Layer 3: Composition Engine", "wraps": ["resolver", "middleware", "engine", "workflow", "dag", "pipeline"] },
+    { "kind": "region", "label": "Layer 1: Runtime Adapters", "wraps": ["registry", "claude", "apiadapter", "cliadapter"] },
+    { "kind": "region", "label": "Layer 2: Platform Core", "wraps": ["memory", "eventbus", "kvstore", "docstore"] }
+  ],
+  "connections": [
+    { "id": "user-cli", "from": "user", "to": "cli", "label": "orch run" },
+    { "id": "user-sdk", "from": "user", "to": "sdk", "label": "SDK API" },
+    { "id": "user-loader", "from": "user", "to": "loader", "label": "agent.yaml" },
+    { "id": "cli-platform", "from": "cli", "to": "platform", "label": "runStreaming()" },
+    { "id": "sdk-platform", "from": "sdk", "to": "platform", "label": "run()", "variant": "dashed" },
+    { "id": "loader-platform", "from": "loader", "to": "platform", "label": "AgentDefinition", "variant": "dashed" },
+    { "id": "platform-resolver", "from": "platform", "to": "resolver", "label": "resolve runtime", "fromSide": "top", "toSide": "bottom" },
+    { "id": "platform-engine", "from": "platform", "to": "engine", "label": "execute", "variant": "emphasis" },
+    { "id": "platform-workflow", "from": "platform", "to": "workflow", "label": "runWorkflow()", "fromSide": "bottom", "toSide": "top" },
+    { "id": "platform-pipeline", "from": "platform", "to": "pipeline", "label": "runPipeline()", "fromSide": "left", "toSide": "top" },
+    { "id": "engine-middleware", "from": "engine", "to": "middleware", "label": "via chain", "fromSide": "top", "toSide": "bottom" },
+    { "id": "engine-registry", "from": "engine", "to": "registry", "label": "create adapter", "variant": "emphasis" },
+    { "id": "registry-claude", "from": "registry", "to": "claude", "fromSide": "bottom", "toSide": "top" },
+    { "id": "registry-api", "from": "registry", "to": "apiadapter", "fromSide": "bottom", "toSide": "top" },
+    { "id": "registry-cliadapter", "from": "registry", "to": "cliadapter", "fromSide": "bottom", "toSide": "top" },
+    { "id": "workflow-dag", "from": "workflow", "to": "dag", "label": "schedule batch" },
+    { "id": "workflow-engine", "from": "workflow", "to": "engine", "label": "dispatch node", "fromSide": "right", "toSide": "bottom" },
+    { "id": "engine-eventbus", "from": "engine", "to": "eventbus", "label": "publish events", "variant": "dashed" },
+    { "id": "workflow-memory", "from": "workflow", "to": "memory", "label": "cleanup scopes", "variant": "dashed" },
+    { "id": "memory-kv", "from": "memory", "to": "kvstore", "fromSide": "bottom", "toSide": "top" },
+    { "id": "memory-doc", "from": "memory", "to": "docstore", "fromSide": "bottom", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "User Surface (L4)", "items": ["CLI commands, SDK fluent builders, YAML/Markdown agent definitions", "Three entry paths converge on Platform.run() / runWorkflow()"] },
+    { "dot": "emerald", "title": "Composition Engine (L3)", "items": ["Execution Engine dispatches to runtime adapters via middleware chain", "DAG Scheduler with topological sort and priority-based scheduling", "Pipeline Runner for sequential steps with {{previous}} interpolation"] },
+    { "dot": "violet", "title": "Platform Core (L2)", "items": ["Event Bus with glob-style wildcard pattern matching", "4-level scoped memory: global, project, workflow, agent", "KV Store for coordination, Document Store for versioned context"] },
+    { "dot": "amber", "title": "Runtime Adapters (L1)", "items": ["Claude Code wraps Agent SDK with streaming events", "API adapter supports OpenAI and Anthropic-compatible endpoints", "CLI adapter runs shell commands with template interpolation"] }
+  ]
+}
