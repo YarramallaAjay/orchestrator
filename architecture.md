@@ -1,570 +1,804 @@
-# Orchestrator Architecture
+# Platform Architecture
 
-## Overview
+> Universal AI agent platform -- compose any harness, API, framework, or CLI tool into workflows with shared memory, scheduling, and observability.
 
-The Orchestrator is a multi-agent development automation system that decomposes requirements into a task graph, schedules tasks onto Claude Code agents, executes them autonomously (optionally in parallel using git worktrees), validates results, and retries failures. It integrates with Claude Code via hooks and provides a CLI + web dashboard for management and monitoring.
+## Vision
 
-**Version**: 0.2.1 | **Runtime**: Node.js >=18 (ESM) | **Language**: TypeScript ES2022 | **Database**: SQLite (via better-sqlite3 + Drizzle ORM)
+A platform where users compose heterogeneous runtimes (Claude Code, Copilot, Aide, OpenCode, V0, LangChain, AutoGen, Docker, kubectl, raw API calls) into whatever they want. The platform provides the connective tissue: shared memory, context, scheduling, composition, and optimization.
 
----
+Users can:
+- **Code agents** from scratch using the SDK (TypeScript)
+- **Write descriptive agents** as `.md` files that the platform interprets and executes
+- **Define agents** via `agent.yaml` config files with sensible defaults
+- **Wrap framework agents** (LangGraph, AutoGen, CrewAI) as platform-managed runtimes
+- **Merge external agents** -- trigger and coordinate agents hosted elsewhere
+- **Extend everything** -- swap schedulers, memory backends, middleware, adapters via plugins
 
-## System Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         CLI Layer (Commander.js)                     │
-│  orchestrate | plan | run | task | status | agent | worktree | ...   │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────────┐
-│                      Core Orchestration Engine                       │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌───────────┐          │
-│  │ Planner  │→ │Scheduler │→ │ Executor  │→ │ Validator │          │
-│  └──────────┘  └──────────┘  └───────────┘  └───────────┘          │
-│       ↕              ↕             ↕              ↕                  │
-│  ┌──────────────────────────────────────────────────────┐           │
-│  │              SessionManager (state persistence)       │           │
-│  └──────────────────────────────────────────────────────┘           │
-│       ↕              ↕             ↕              ↕                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
-│  │ArtifactEx│  │ConflictDe│  │SessionAna│  │ProjectSca│           │
-│  │tractor   │  │tector    │  │lytics    │  │nner      │           │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘           │
-└──────────────────────────────────────────────────────────────────────┘
-               │                     │                │
-┌──────────────▼──────┐  ┌───────────▼──────┐  ┌──────▼──────────────┐
-│    Agent System     │  │   Task System    │  │  Context System     │
-│ ┌─────────────────┐ │  │ ┌──────────────┐ │  │ ┌────────────────┐ │
-│ │  AgentManager   │ │  │ │TaskRepository│ │  │ │ ContextStore   │ │
-│ │  AgentRegistry  │ │  │ │  TaskGraph   │ │  │ │ObservationStore│ │
-│ │ ContextBuilder  │ │  │ └──────────────┘ │  │ └────────────────┘ │
-│ └─────────────────┘ │  └────────────────┘ │  └────────────────────┘
-│ ┌─────────────────┐ │         │                       │
-│ │    Runtimes     │ │         │                       │
-│ │ ┌─────────────┐ │ │  ┌──────▼──────────┐  ┌────────▼─────────┐
-│ │ │ claude-sdk  │ │ │  │   Git System    │  │  Event System    │
-│ │ │ claude-cli  │ │ │  │ WorktreeManager │  │   EventBus       │
-│ │ │ api         │ │ │  │ MergeCoordinator│  │   EventStore     │
-│ │ └─────────────┘ │ │  └─────────────────┘  └──────────────────┘
-│ └─────────────────┘ │
-└─────────────────────┘         │
-                         ┌──────▼──────────┐
-                         │  Database Layer  │
-                         │   SQLite + ORM   │
-                         │   14 tables      │
-                         └─────────────────┘
-```
+The platform is open-source. Users can customize shared memory optimizers, token usage optimizers, or any platform component.
 
 ---
 
-## Feature Inventory
+## Settled Design Decisions
 
-### 1. Requirement Decomposition (Planner)
-- LLM-powered decomposition of natural language requirements into a structured task DAG
-- System prompt enforces strict JSON-only output with explicit "CRITICAL: respond with ONLY a valid JSON object" instruction
-- Task schema: title, description, classification, priority, dependencies, tags, acceptance criteria, validation script, effort estimate
-- **Retry logic** (configurable `maxRetries`, default 2): if LLM returns invalid JSON, retries with a dedicated `RETRY_PROMPT` that re-emphasizes raw JSON requirement
-- **JSON extraction fallback**: tries markdown code fences (```` ```json ````), then raw `{...}` regex extraction before parsing
-- Dependency resolution by task title, mapped to internal temp IDs
-- Session analytics injection — historical failure patterns and cost-by-effort data fed into planner prompt via `SessionAnalytics.formatForPlannerPrompt()`
-
-### 2. Task Management (TaskRepository + TaskGraph)
-- Full CRUD for tasks with SQLite persistence
-- State machine with 8 states: PENDING → READY → RUNNING → COMPLETED/FAILED
-- Dependency tracking via taskDependencies table (BLOCKS/SOFT types)
-- In-memory DAG with topological sort (Kahn's algorithm), cycle detection (DFS), critical path analysis
-- Cascade cancellation of downstream tasks
-- Automatic promotion of tasks to READY when all dependencies complete
-
-### 3. Agent Scheduling (Scheduler)
-- Priority-based scheduling (lower number = higher priority)
-- Capability matching: task tags scored against agent capability levels (basic=1, proficient=2, expert=3)
-- Role-based keyword matching (backend-developer, frontend-developer, etc.)
-- Cost-aware model selection via EFFORT_MODEL_MAP (trivial→haiku, medium→sonnet, xlarge→opus)
-- File conflict prediction: regex extraction of file paths from task descriptions, prevents concurrent modification
-- Default agent fallback when no templates defined
-
-### 4. Agent Execution (Executor + Runtimes)
-- Three runtime backends:
-  - **claude-sdk**: Uses `@anthropic-ai/claude-agent-sdk` query() — structured, no subprocess. Sets `ORCH_AGENT_MODE=1` to prevent hook recursion. Strips `CLAUDE_CODE` and `CLAUDE_CODE_ENTRYPOINT` env vars.
-  - **claude-cli**: Spawns `claude -p <prompt> --output-format stream-json` as child process. Uses `buildChildEnv()` to strip `CLAUDE_CODE`/`CLAUDE_CODE_ENTRYPOINT` env vars and set `ORCH_AGENT_MODE=1`. Multi-strategy binary discovery: local node_modules → `which claude` → global paths → bare fallback.
-  - **api**: Direct HTTP to Anthropic Messages API (requires ANTHROPIC_API_KEY). Single-turn only.
-- AsyncGenerator pattern: yields AgentMessage events during execution, returns AgentRunResult on completion
-- **Token/cost tracking** (v0.2.1): Both SDK and CLI runtimes extract cost from `total_cost_usd` (not `cost_usd`), tokens from nested `usage.input_tokens`/`usage.output_tokens`, and aggregate across all models via `modelUsage` object (includes Task subagents, sidechains, and auxiliary calls). SDK runtime extracts metrics from both success and error result events.
-- Prompt building: task description + acceptance criteria + input context + shared project context + worktree path + retry feedback
-- Event streaming to EventBus during execution
-
-### 5. Validation (Validator)
-- 5 validation checks run after each task:
-  1. Agent execution success (exit code / result.success)
-  2. Custom validation script (`sh -c <script>` with 2-min timeout)
-  3. TypeScript type check (`tsc --noEmit` if tsconfig.json exists)
-  4. ESLint check (if eslint config detected)
-  5. Acceptance criteria presence check
-- Retry with feedback: failed validation produces markdown feedback injected into task's inputContext._retryFeedback
-- Configurable via `orchestrator.validationEnabled` and `orchestrator.autoRetry`
-
-### 6. Git Worktree Isolation (WorktreeManager + MergeCoordinator)
-- Each task can execute in an isolated git worktree (separate branch + directory)
-- Branch naming: `{branchPrefix}{slug}-{taskId}`
-- Worktree path: `.orchestrator/worktrees/{slug}-{taskId}`
-- Merge via `git merge --no-ff` with conflict detection
-- MergeCoordinator: plans merge order, executes sequential integration, stops on conflict (configurable)
-- Cleanup: removes MERGED/ABANDONED worktrees + prunes git refs
-
-### 7. Context System (ContextStore + ObservationStore + ProjectScanner)
-- **ContextStore**: Key-value store with 6 categories (REQUIREMENTS, ARCHITECTURE, API_CONTRACT, DECISION, CONVENTION, DEPENDENCY). Version history tracked. Content injected into all agent prompts via `buildAgentContext()`.
-- **ProjectScanner**: Auto-scans project at orchestration start. Detects package manager, language, framework, build tool, test framework, conventions. Stores as ARCHITECTURE context entry.
-- **ObservationStore**: Agents' implicit observations (patterns, conventions, warnings, discoveries) extracted from output via regex. Matched to downstream tasks by file relevance + tags. Confidence scored (0.6–0.8).
-
-### 8. Artifact Passing (ArtifactExtractor)
-- After task completion, scans agent messages for Write/Edit tool calls → extracts files created/modified
-- Detects decisions from assistant text ("I decided", "Chose", "Using")
-- Formats artifacts as markdown context for downstream tasks
-- Enables cross-task awareness: dependent tasks know what upstream tasks produced
-
-### 9. Conflict Detection (ConflictDetector)
-- Pre-execution: regex-based file path prediction from task descriptions
-- Post-execution: tracks actual files touched per task, detects overlaps via pairwise comparison
-- Scheduler uses predictions to prevent scheduling conflicting tasks in same batch
-
-### 10. Session Management (SessionManager)
-- State persisted to `.orchestrator/sessions/{sessionId}.json`
-- Tracks: completed/failed tasks, agent sessions, accumulated metrics (cost, tokens, tool calls, turns)
-- Resume capability: `--resume` flag reloads last interrupted session
-- Session metrics also persisted to orchestratorSessions table in SQLite
-
-### 11. Session Analytics (SessionAnalytics)
-- Queries historical `orchestratorSessions` and `taskMetrics` tables to compute: total sessions, avg duration, avg cost, avg tasks planned, completion rate, failure patterns (grouped by status), cost/duration by effort level (joins tasks table)
-- `formatForPlannerPrompt()` produces markdown summary injected into planner's requirements prompt — includes avg cost per session, task completion rate, cost-by-effort breakdown, and failure warnings
-- Planner calls `sessionAnalytics.analyze()` before decomposition if analytics instance is provided via config
-
-### 12. Event System (EventBus + EventStore)
-- In-process pub/sub with glob pattern matching (minimatch)
-- Event types: task.state_changed, task.created, agent.message, agent.status_changed, context.updated, validation.*
-- EventStore persists all events to SQLite asynchronously
-- Queryable: filter by projectId, type, timestamp, with pagination
-
-### 13. Claude Code Integration (Hooks)
-- **SessionStart hook**: Detects `orchestrator.config.yaml` → offers orchestrator mode to user
-- **UserPromptSubmit hook**: If `.orchestrator/session-active` marker exists → routes user requests through orchestrate command with timestamp-unique requirements file
-- **Hook recursion guard** (v0.2.0): Both hooks check `process.env.ORCH_AGENT_MODE === '1'` at the top and `process.exit(0)` immediately, preventing recursive hook injection into agent subprocesses. Both runtimes (SDK + CLI) set this env var before spawning agents.
-- Install/uninstall via `npx orch hooks install|uninstall`
-
-### 14. Web Dashboard
-- Fastify server on configurable port (default 3847)
-- REST routes for tasks, agents, context, worktrees, events, metrics, evals
-- WebSocket support for real-time event streaming
-
-### 15. Evaluation Framework
-- Built-in + custom evaluation scenarios (YAML-defined)
-- EvalRunner executes scenarios as mini-orchestrations
-- Report generator: table, JSON, comparison formats
-- History tracking in evalRuns table
-- CLI: `npx orch eval run|list|history|report|compare`
-
-### 16. Metrics & Observability
-- Per-task metrics: cost (`total_cost_usd`), tokens (input/output via `usage` + `modelUsage` aggregation), tool calls, turns, duration, attempt number
-- `modelUsage` aggregation (v0.2.1): sums token counts across all models used during a task, including Task subagents, sidechains, and auxiliary calls — provides comprehensive accounting beyond the main loop
-- Per-session aggregates: total cost, total tokens, success rate
-- CLI: `npx orch metrics`, `npx orch metrics sessions`, `npx orch metrics session <id>`
-- Stored in taskMetrics and orchestratorSessions tables
+| # | Decision | Answer |
+|---|----------|--------|
+| 1 | Scope | Ground-up re-architecture of the orchestrator into a universal platform |
+| 2 | Persona | Universal -- anyone building with AI, not narrowed to a single use case |
+| 3 | Platform type | Both runtime and SDK, open-source, users extend at every layer |
+| 4 | Core owns | Context/Memory + Scheduling + Composition. Execution, Observation, Optimization are pluggable. |
+| 5 | Runtime adapter | Uniform async interface (`initialize`, `execute`, `cancel`, `status`) with pluggable transports (in-process, stdio, HTTP) |
+| 6 | Shared memory | Layered: KV store (fast coordination, locks, signals) + Document store (rich context, requirements, architecture) |
+| 7 | Language | TypeScript for v1, protocol-first north star (define interfaces as protocols so polyglot SDKs are possible later) |
+| 8 | Composition | DAG + pipeline + event-driven, all first-class patterns |
+| 9 | Extension model | Plugins (new capabilities: adapters, backends) + Middleware (modify behavior: caching, optimization, routing) |
+| 10 | User config | YAML for simple cases, TypeScript code for complex ones, `.md` descriptive agents, scaffolding wizard |
+| 11 | Agent abstraction | An agent is a `RuntimeAdapter` + config. Statefulness is an adapter concern, not a platform distinction. |
+| 12 | Context scopes | Four levels: global / project / workflow / agent |
+| 13 | Scheduling | Pluggable. Default is concurrency-limited with basic cost budgets. Interface: `getNextBatch(readyTasks, slots, constraints) → tasks` |
+| 14 | Scaffolding | Template gallery for known patterns + interactive CLI prompts for custom setups |
+| 15 | Runtime assignment | Capability matching + user-configurable preference order |
+| 16 | Cross-harness comms | Shared memory + event notifications (no direct agent-to-agent messaging) |
+| 17 | Code agent SDK | Fluent builder + observer pattern: `Agent.create().runtime().on().build()` |
+| 18 | Multi-step `.md` agents | Explicit `## Steps` section if provided; planner fallback (low-cost model) if not |
+| 19 | Plugin distribution | npm packages, no custom registry |
+| 20 | `.md` agent format | Frontmatter (identity + preferences) + body (instructions + optional structured sections) |
+| 21 | `agent.yaml` format | Only `name` required, everything else optional with sensible defaults |
+| 22 | Codebase strategy | Reshape what fits, rewrite what's coupled, checkpoint after each milestone |
 
 ---
 
-## Orchestration Pipeline (End-to-End Flow)
+## Four-Layer Architecture
 
 ```
-User submits requirements
-        │
-        ▼
-┌─ Phase 1: PROJECT SCANNING ──────────────────────────┐
-│  ProjectScanner.scan(rootPath)                        │
-│  → Detects: pkg manager, language, framework, etc.    │
-│  → Stores result as ARCHITECTURE context entry        │
-└───────────────────────────────────────────────────────┘
-        │
-        ▼
-┌─ Phase 2: PLANNING ──────────────────────────────────┐
-│  Planner.decompose(requirements)                      │
-│  → Fetches session analytics (if available)           │
-│  → Sends requirements + system prompt to LLM agent    │
-│  → Parses JSON task graph from response               │
-│  → Resolves inter-task dependencies by title          │
-│  → Creates tasks in DB (2-pass: create, then edges)   │
-│  → Validates DAG (cycle detection)                    │
-│  → Promotes tasks with met deps to READY              │
-└───────────────────────────────────────────────────────┘
-        │
-        ▼
-┌─ Phase 3: PLAN APPROVAL (optional) ──────────────────┐
-│  onPlanReady callback displays task table              │
-│  User approves or rejects plan                        │
-│  If rejected: session ends with "Plan rejected"       │
-└───────────────────────────────────────────────────────┘
-        │
-        ▼
-┌─ Phase 4: EXECUTION LOOP ────────────────────────────┐
-│  while (tasks remain):                                │
-│    1. Get READY tasks from DB                         │
-│    2. Check file conflict predictions                 │
-│    3. Scheduler.schedule() → assignments              │
-│       - Priority sort                                 │
-│       - Capability matching                           │
-│       - Cost-aware model selection                    │
-│       - Conflict avoidance                            │
-│    4. For each assignment:                            │
-│       a. Transition task → RUNNING                    │
-│       b. Build context (AgentContextBuilder)          │
-│          - Task description + criteria                │
-│          - Upstream artifacts (_upstreamArtifacts)     │
-│          - Shared project context                     │
-│          - Agent observations                         │
-│          - Retry feedback (if retry)                  │
-│       c. Executor.execute(task, agent, context)       │
-│          - Runtime.run() → stream messages            │
-│          - Publish messages to EventBus               │
-│       d. Validator.validate(task, result, cwd)        │
-│          - Agent success check                        │
-│          - Validation script check                    │
-│          - TypeScript type check                      │
-│          - ESLint check                               │
-│          - Acceptance criteria check                  │
-│       e. If validation fails & retries remain:        │
-│          - Build feedback from failures               │
-│          - Store in task.inputContext._retryFeedback   │
-│          - Transition task → READY (for retry)        │
-│       f. If validation passes:                        │
-│          - Extract artifacts (files, exports, decisions)│
-│          - Inject artifacts into dependent tasks      │
-│          - Extract observations from agent output     │
-│          - Transition task → COMPLETED                │
-│          - Promote downstream tasks to READY          │
-│       g. Persist task metrics to DB                   │
-│    5. Wait for running tasks if no READY tasks        │
-│    6. Break if deadlock (pending but none ready/running)│
-└───────────────────────────────────────────────────────┘
-        │
-        ▼
-┌─ Phase 5: RESULTS ───────────────────────────────────┐
-│  Collect final task statuses                          │
-│  Persist session metrics to DB                        │
-│  Return OrchestratorResult:                           │
-│    success, tasks, completed, failed, cancelled,      │
-│    totalCostUsd, durationMs, sessionId, summary,      │
-│    metrics (tokens, tool calls, turns)                │
-└───────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    LAYER 4: USER SURFACE                    │
+│                                                             │
+│  CLI Commands         SDK (TypeScript)      Agent Loader    │
+│  orch init            Agent.create()        .yaml parser    │
+│  orch run             Workflow.create()     .md parser      │
+│  orch workflow run    Events constants      frontmatter     │
+│  orch agent list                                            │
+│  orch status                                                │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│              LAYER 3: COMPOSITION ENGINE                     │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐ │
+│  │     DAG      │  │   Pipeline   │  │    Workflow       │ │
+│  │  Scheduler   │  │    Runner    │  │   Orchestrator    │ │
+│  └──────┬───────┘  └──────┬───────┘  └────────┬──────────┘ │
+│         └─────────────────┼────────────────────┘            │
+│                           ▼                                 │
+│              Execution Engine                               │
+│              (dispatch, streaming, lifecycle)                │
+│                                                             │
+│  ┌────────────────────┐  ┌──────────────────────────┐      │
+│  │  Runtime Resolver  │  │    Middleware Chain       │      │
+│  │  (capability match │  │  (retry, timeout, logging │      │
+│  │   + preferences)   │  │   + custom middleware)    │      │
+│  └────────────────────┘  └──────────────────────────┘      │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│                 LAYER 2: PLATFORM CORE                       │
+│                                                             │
+│  ┌──────────────────────┐  ┌────────────────────────────┐  │
+│  │   Memory Subsystem   │  │       Event Bus             │  │
+│  │                      │  │   (pub/sub, wildcards,      │  │
+│  │  KV Store            │  │    once, waitFor)           │  │
+│  │  (signals, locks,    │  └────────────────────────────┘  │
+│  │   coordination,      │                                   │
+│  │   subscriptions)     │  ┌────────────────────────────┐  │
+│  │                      │  │    Memory Manager           │  │
+│  │  Document Store      │  │   (scoped handles,          │  │
+│  │  (context, reqs,     │  │    read-only enforcement,   │  │
+│  │   versioned docs)    │  │    workflow cleanup)         │  │
+│  │                      │  └────────────────────────────┘  │
+│  │  Scopes:             │                                   │
+│  │  global / project /  │                                   │
+│  │  workflow / agent    │                                   │
+│  └──────────────────────┘                                   │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│              LAYER 1: RUNTIME ADAPTERS                       │
+│                                                             │
+│  Uniform Interface:                                         │
+│    initialize(config) → ready                               │
+│    execute(input) → AsyncGenerator<RuntimeEvent>            │
+│    cancel() → stopped                                       │
+│    status() → RuntimeState                                  │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │  Claude Code  │  │    API       │  │     CLI      │     │
+│  │   adapter     │  │   adapter    │  │   adapter    │     │
+│  │              │  │  (OpenAI,    │  │  (shell,     │     │
+│  │  file-edit   │  │  Anthropic,  │  │   Docker,    │     │
+│  │  shell, git  │  │  any HTTP)   │  │   kubectl)   │     │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
+│         │                 │                  │              │
+│    @anthropic-ai/       HTTP fetch       child_process      │
+│    claude-agent-sdk                      spawn              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Task State Machine
+## Architectural Diagrams
 
-```
-                    ┌─────────────┐
-         ┌────────→│   BLOCKED   │←────────┐
-         │         └──────┬──────┘         │
-         │                │ (deps met)     │
-         │                ▼                │
-    ┌────┴────┐    ┌──────────────┐   ┌────┴─────┐
-    │ PENDING │───→│    READY     │←──│  FAILED  │
-    └────┬────┘    └──────┬───────┘   └────┬─────┘
-         │                │ (assigned)      │ (retry)
-         │                ▼                 │
-         │         ┌──────────────┐         │
-         │         │   RUNNING    │─────────┘
-         │         └──┬────┬───┬──┘
-         │            │    │   │
-         │            ▼    │   ▼
-         │    ┌────────┐   │  ┌───────────────────┐
-         │    │COMPLETED│  │  │WAITING_FOR_HUMAN   │
-         │    └────────┘   │  └───────┬───────────┘
-         │                 │          │ (resume)
-         │                 │          ▼
-         │                 │     Back to RUNNING
-         │                 ▼
-         │          ┌───────────┐
-         └─────────→│ CANCELLED │
-                    └───────────┘
+### System Overview — Layer Dependency Flow
 
-Terminal states: COMPLETED, CANCELLED
-```
+```mermaid
+graph TB
+    subgraph L4["Layer 4: User Surface"]
+        CLI["CLI Commands<br/>orch init / run / workflow / agent"]
+        SDK["SDK<br/>Agent.create() / Workflow.create()"]
+        Loader["Agent Loader<br/>.yaml / .md parser"]
+    end
 
----
+    subgraph L3["Layer 3: Composition Engine"]
+        WO["Workflow Orchestrator"]
+        PR["Pipeline Runner"]
+        DAG["DAG Scheduler"]
+        EE["Execution Engine"]
+        RR["Runtime Resolver"]
+        MW["Middleware Chain<br/>retry · timeout · logging"]
+    end
 
-## Database Schema (14 Tables)
+    subgraph L2["Layer 2: Platform Core"]
+        EB["Event Bus<br/>pub/sub · glob patterns"]
+        MM["Memory Manager"]
+        KV["KV Store<br/>signals · locks · subscriptions"]
+        DS["Document Store<br/>versioning · search"]
+    end
 
-| Table | Purpose | Key Columns |
-|-------|---------|-------------|
-| `projects` | Project registry | id, name, rootPath, configPath |
-| `tasks` | Task records | id, projectId, title, description, status, classification, priority, assignedAgentId, worktreeId, attempt, maxRetries, inputContext (JSON), outputArtifacts (JSON), acceptanceCriteria (JSON), validationScript, tags (JSON), estimatedEffort |
-| `taskDependencies` | Task DAG edges | taskId, dependsOnTaskId, type (BLOCKS\|SOFT) |
-| `agentTemplates` | Agent configurations | id, name, role, runtimeType, capabilities (JSON), model, maxTurns, systemPrompt, allowedTools (JSON), permissionMode |
-| `agentInstances` | Running agent state | id, templateId, status, currentTaskId, sessionId, totalCostUsd, turnsUsed |
-| `contextEntries` | Shared project context | id, projectId, key (unique per project), category, title, content, version |
-| `contextHistory` | Context version history | id, entryId, version, content, updatedBy |
-| `observations` | Inter-agent knowledge | id, projectId, taskId, agentId, type, content, relevantFiles (JSON), confidence |
-| `events` | Event audit trail | id, type, source, projectId, payload (JSON), timestamp |
-| `worktrees` | Git worktree state | id, projectId, path, branch, taskId, agentId, status (ACTIVE\|MERGED\|ABANDONED) |
-| `orchestratorSessions` | Session-level metrics | id, projectId, requirements, status, tasksPlanned/Completed/Failed, totalCostUsd, totalTokens, durationMs |
-| `taskMetrics` | Per-task execution metrics | id, sessionId, taskId, agentId, costUsd, inputTokens, outputTokens, toolCalls, turns, durationMs, attempt, status |
-| `evalRuns` | Evaluation results | id, scenarioName, projectId, status, metrics (JSON), config (JSON) |
-| `mcpServers` | MCP server configs | id, name, type, command, args (JSON), url, env (JSON) |
+    subgraph L1["Layer 1: Runtime Adapters"]
+        CC["Claude Code Adapter<br/>claude-agent-sdk"]
+        API["API Adapter<br/>OpenAI · Anthropic HTTP"]
+        CLIa["CLI Adapter<br/>child_process spawn"]
+    end
 
-**Indexes**: tasks(projectId, status), tasks(assignedAgentId), events(projectId, type), events(timestamp), evalRuns(startedAt)
+    CLI --> WO
+    CLI --> EE
+    SDK --> WO
+    SDK --> EE
+    Loader --> L3
 
----
+    WO --> DAG
+    WO --> EE
+    WO --> MW
+    PR --> EE
+    EE --> RR
+    EE --> MW
 
-## Agent Runtime Comparison
+    WO --> EB
+    WO --> MM
+    PR --> EB
+    EE --> EB
+    MW --> EB
+    MM --> KV
+    MM --> DS
 
-| Feature | claude-sdk | claude-cli | api |
-|---------|-----------|------------|-----|
-| Subprocess? | No (in-process) | Yes (child_process.spawn) | No (HTTP fetch) |
-| Auth | Claude Code subscription | Claude Code subscription | ANTHROPIC_API_KEY |
-| Tool use | Full (multi-turn) | Full (multi-turn) | None (single-turn) |
-| Streaming | Via event callbacks | Via stdout JSON stream | No |
-| Env sanitization | Strips CLAUDE_CODE + CLAUDE_CODE_ENTRYPOINT, sets ORCH_AGENT_MODE=1 | Strips CLAUDE_CODE + CLAUDE_CODE_ENTRYPOINT via buildChildEnv(), sets ORCH_AGENT_MODE=1 | N/A |
-| Cost tracking | `total_cost_usd` + `modelUsage` aggregation (includes subagents) | `total_cost_usd` + `modelUsage` aggregation (includes subagents) | Estimated from token counts |
-| Token tracking | `usage.input_tokens`/`output_tokens` with `modelUsage` fallback | `usage.input_tokens`/`output_tokens` with `modelUsage` fallback | From API response |
-| Session resume | Via session ID | Via --resume flag | No |
-| Error handling | Structured exceptions; extracts metrics from error results too | Exit code + stderr | HTTP status codes |
-| Binary discovery | N/A (in-process) | Local node_modules → `which` → global paths → bare fallback | N/A |
+    EE --> CC
+    EE --> API
+    EE --> CLIa
 
----
-
-## Configuration Schema
-
-```yaml
-project:
-  name: string                          # Required
-  rootPath: string                      # Default: "."
-
-orchestrator:
-  maxConcurrentAgents: number           # Default: 3
-  maxTotalBudgetUsd: number             # Default: 10.0
-  autoRetry: boolean                    # Default: true
-  maxRetries: number                    # Default: 2
-  validationEnabled: boolean            # Default: true
-
-database:
-  path: string                          # Default: ".orchestrator/data.db"
-
-agents:
-  templates:                            # Default: []
-    - id: string
-      name: string
-      role: string                      # backend-developer, frontend-developer, etc.
-      runtimeType: claude-sdk|claude-cli|api
-      capabilities:
-        - name: string
-          level: basic|proficient|expert
-      model: string                     # Optional: claude-sonnet-4-6, claude-haiku-4-5, etc.
-      maxTurns: number                  # Optional
-      maxBudgetUsd: number              # Optional
-      systemPrompt: string              # Optional
-      allowedTools: string[]            # Optional
-      permissionMode: default|auto|acceptEdits  # Default: default
-      mcpServers: string[]              # Optional
-
-git:
-  integrationBranch: string             # Default: "main"
-  worktreeDir: string                   # Default: ".orchestrator/worktrees"
-  branchPrefix: string                  # Default: "orch/"
-
-web:
-  port: number                          # Default: 3847
-  host: string                          # Default: "localhost"
+    style L4 fill:#e8f5e9,stroke:#2e7d32
+    style L3 fill:#e3f2fd,stroke:#1565c0
+    style L2 fill:#fff3e0,stroke:#e65100
+    style L1 fill:#fce4ec,stroke:#c62828
 ```
 
----
+### Execution Flow — Single Agent Run
 
-## CLI Command Reference
+```mermaid
+sequenceDiagram
+    participant User
+    participant Platform
+    participant RR as Runtime Resolver
+    participant MW as Middleware Chain
+    participant EE as Execution Engine
+    participant Adapter as Runtime Adapter
+    participant EB as Event Bus
 
-| Command | Description |
-|---------|-------------|
-| `orch init` | Initialize orchestrator in current directory |
-| `orch orchestrate <file>` | Full pipeline: plan → approve → execute → validate |
-| `orch plan <file>` | Decompose requirements into task graph (no execution) |
-| `orch run` | Execute ready tasks (--task for single, --orchestrate for full loop) |
-| `orch task add\|list\|show\|cancel` | Task CRUD |
-| `orch status` | Project-level progress overview |
-| `orch agent list\|inspect\|add\|remove` | Agent template management |
-| `orch context set\|get\|list\|delete\|history` | Shared context management |
-| `orch worktree list\|clean\|merge\|remove\|integrate` | Git worktree management |
-| `orch config show\|get` | View configuration |
-| `orch metrics [sessions\|session\|tasks]` | Performance metrics |
-| `orch eval run\|list\|history\|report\|compare` | Evaluation framework |
-| `orch hooks install\|uninstall\|status` | Claude Code hook management |
-| `orch serve` | Start web dashboard |
+    User->>Platform: platform.run({ prompt, agentName })
+    Platform->>Platform: resolveAgent(agentName)
+    Platform->>RR: resolve(agent) — capability match
+    RR-->>Platform: runtime type
 
----
+    Platform->>EE: execute(request)
+    EE->>EB: publish(execution.started)
 
-## Component Handoff Map
+    EE->>MW: execute(context, executeFn)
+    Note over MW: LoggingMiddleware → TimeoutMiddleware → RetryMiddleware → executeFn
 
-This shows how data flows between components during orchestration:
+    MW->>EB: publish(agent.started)
+    MW->>Adapter: execute(input)
 
-```
-Requirements (string)
-    │
-    ├──→ ProjectScanner.scan() ──→ ContextStore.set(ARCHITECTURE)
-    │
-    ├──→ SessionAnalytics.analyze() ──→ Planner (system prompt enrichment)
-    │
-    └──→ Planner.decompose()
-              │
-              └──→ CreateTaskInput[] ──→ TaskRepository.create()
-                                              │
-                                              └──→ TaskGraph (in-memory DAG)
-                                                       │
-                                              ┌────────┘
-                                              ▼
-                                    Scheduler.schedule()
-                                              │
-                                    ┌─────────┘
-                                    ▼
-                    ┌──→ AgentContextBuilder.build()
-                    │         │
-                    │         ├── ContextStore.buildAgentContext()
-                    │         ├── ObservationStore.findRelevant()
-                    │         └── task.inputContext._upstreamArtifacts
-                    │
-                    └──→ Executor.execute()
-                              │
-                              ├──→ Runtime.run() ──→ AgentMessage stream ──→ EventBus
-                              │
-                              └──→ AgentRunResult
-                                       │
-                              ┌────────┘
-                              ▼
-                    Validator.validate()
-                              │
-                    ┌─────────┴──────────┐
-                    ▼                    ▼
-              (passes)              (fails)
-                    │                    │
-                    ▼                    ▼
-        ArtifactExtractor     Validator.buildFeedback()
-              │                         │
-              ├──→ outputArtifacts      └──→ inputContext._retryFeedback
-              ├──→ dependent tasks           │
-              │    inputContext              ▼
-              │    ._upstreamArtifacts  Task → READY (retry)
-              │
-              └──→ ObservationStore.extractFromResult()
-                         │
-                         └──→ observations table
+    loop AsyncGenerator yields
+        Adapter-->>EE: RuntimeEvent (progress / output / tool_use)
+    end
+
+    Adapter-->>EE: RuntimeEvent (done + RuntimeResult)
+    EE->>EB: publish(execution.completed)
+    MW->>EB: publish(agent.completed)
+
+    EE-->>Platform: ExecutionResult
+    Platform-->>User: result
 ```
 
+### Workflow Execution — DAG Orchestration
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant WO as Workflow Orchestrator
+    participant DAG as DAG Scheduler
+    participant EE as Execution Engine
+    participant MM as Memory Manager
+    participant EB as Event Bus
+
+    User->>WO: runWorkflow(definition)
+    WO->>EB: publish(workflow.started)
+    WO->>DAG: build graph from nodes
+
+    loop Until DAG complete or failed
+        WO->>DAG: getNextBatch(constraints)
+        DAG-->>WO: ready nodes[]
+
+        par For each ready node
+            WO->>MM: buildDependencyContext(node)
+            MM-->>WO: upstream outputs
+            WO->>EE: execute(node.agent, node.prompt + context)
+            EE-->>WO: ExecutionResult
+            WO->>DAG: markCompleted(nodeId) or markFailed(nodeId)
+            WO->>EB: publish(workflow.step.completed)
+        end
+    end
+
+    alt All nodes completed
+        WO->>EB: publish(workflow.completed)
+    else Any node failed
+        WO->>DAG: cascadeCancel(failedNode)
+        WO->>EB: publish(workflow.failed)
+    end
+
+    WO-->>User: WorkflowResult
+```
+
+### DAG Scheduler — Node Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: Node added to graph
+    pending --> ready: All dependencies completed
+    ready --> running: Dispatched by scheduler
+    running --> completed: Execution succeeded
+    running --> failed: Execution failed
+    failed --> running: Retry (if retries remain)
+    failed --> cancelled: Max retries exceeded
+    completed --> [*]
+    cancelled --> [*]
+
+    note right of ready: getNextBatch() returns\nready nodes within\nconcurrency + budget limits
+    note right of failed: cascadeCancel() marks\nall downstream nodes\nas cancelled
+```
+
+### Memory Model — Scope Hierarchy
+
+```mermaid
+graph TB
+    subgraph Global["Global Scope"]
+        GKV["KV: shared config, feature flags"]
+        GDS["Docs: platform-level context"]
+    end
+
+    subgraph Project["Project Scope"]
+        PKV["KV: project settings, API keys"]
+        PDS["Docs: requirements, architecture"]
+    end
+
+    subgraph Workflow["Workflow Scope (ephemeral)"]
+        WKV["KV: signals, locks, coordination"]
+        WDS["Docs: intermediate outputs"]
+    end
+
+    subgraph AgentA["Agent A Scope (private)"]
+        AKV["KV: internal state"]
+        ADS["Docs: scratch space"]
+    end
+
+    subgraph AgentB["Agent B Scope (private)"]
+        BKV["KV: internal state"]
+        BDS["Docs: scratch space"]
+    end
+
+    Global --> Project
+    Project --> Workflow
+    Workflow --> AgentA
+    Workflow --> AgentB
+
+    AgentA -.->|"read-write to<br/>workflow scope"| WKV
+    AgentB -.->|"read-only from<br/>workflow scope"| WKV
+    AgentA -.->|"subscribe('api-schema')"| WKV
+
+    style Global fill:#f3e5f5,stroke:#7b1fa2
+    style Project fill:#e8eaf6,stroke:#283593
+    style Workflow fill:#e0f7fa,stroke:#00695c
+    style AgentA fill:#fff9c4,stroke:#f57f17
+    style AgentB fill:#fff9c4,stroke:#f57f17
+```
+
+### Middleware Chain — Request Pipeline
+
+```mermaid
+graph LR
+    Request["Execution<br/>Request"] --> Log["LoggingMiddleware<br/>emit agent.started"]
+    Log --> Timeout["TimeoutMiddleware<br/>enforce timeoutMs"]
+    Timeout --> Retry["RetryMiddleware<br/>retry on failure"]
+    Retry --> Exec["executeFn()<br/>adapter.execute()"]
+    Exec --> Result["ExecutionResult"]
+    Result --> Retry
+    Retry --> Timeout
+    Timeout --> Log
+    Log --> Response["Response<br/>to caller"]
+
+    style Request fill:#e8f5e9,stroke:#2e7d32
+    style Response fill:#e8f5e9,stroke:#2e7d32
+    style Log fill:#e3f2fd,stroke:#1565c0
+    style Timeout fill:#fff3e0,stroke:#e65100
+    style Retry fill:#fce4ec,stroke:#c62828
+    style Exec fill:#f3e5f5,stroke:#7b1fa2
+```
+
+### Plugin System — Extension Points
+
+```mermaid
+graph TB
+    Plugin["Plugin Package<br/>(npm)"]
+
+    Plugin -->|"adapters[]"| AR["Adapter Registry<br/>register(type, factory)"]
+    Plugin -->|"middleware[]"| MC["Middleware Chain<br/>add(middleware)"]
+    Plugin -->|"initialize(ctx)"| Init["Platform Context"]
+
+    Init --> KV["Scoped KV Store"]
+    Init --> DS["Scoped Doc Store"]
+    Init --> EB["Event Bus<br/>publish / subscribe"]
+
+    AR --> NewRT["New Runtime<br/>e.g., LangGraph, Docker"]
+    MC --> NewMW["New Middleware<br/>e.g., rate-limiter, cache"]
+
+    style Plugin fill:#e8f5e9,stroke:#2e7d32
+    style AR fill:#e3f2fd,stroke:#1565c0
+    style MC fill:#fff3e0,stroke:#e65100
+    style Init fill:#fce4ec,stroke:#c62828
+```
+
+### Runtime Resolution — Decision Flow
+
+```mermaid
+flowchart TD
+    Start["Agent needs runtime"] --> Explicit{"runtime<br/>explicitly set?"}
+    Explicit -->|Yes| UseExplicit["Use specified runtime"]
+    Explicit -->|No| UserPrefs{"Match capabilities<br/>against user runtimes<br/>config (by priority)?"}
+    UserPrefs -->|Match found| UsePrefs["Use highest-priority match"]
+    UserPrefs -->|No match| AdapterCaps{"Match against<br/>all registered<br/>adapter capabilities?"}
+    AdapterCaps -->|Match found| UseAdapter["Use matching adapter"]
+    AdapterCaps -->|No match| Fallback{"fallbackRuntime<br/>configured?"}
+    Fallback -->|Yes| UseFallback["Use fallback runtime"]
+    Fallback -->|No| Default["Default: claude-code"]
+
+    style Start fill:#e8f5e9,stroke:#2e7d32
+    style UseExplicit fill:#e3f2fd,stroke:#1565c0
+    style UsePrefs fill:#e3f2fd,stroke:#1565c0
+    style UseAdapter fill:#e3f2fd,stroke:#1565c0
+    style UseFallback fill:#fff3e0,stroke:#e65100
+    style Default fill:#fce4ec,stroke:#c62828
+```
+
 ---
 
-## Known Issues & Bug Fix History
-
-### Fixed in v0.2.0
-1. **~~Recursive hook injection~~** (FIXED): SessionStart and UserPromptSubmit hooks fired inside agent subprocesses, causing agents to respond to orchestrator instructions instead of their task. **Fix**: Both hooks now check `ORCH_AGENT_MODE=1` and exit immediately. Both runtimes set this env var in subprocess environments.
-
-2. **~~CLAUDECODE nesting block~~** (FIXED): Subprocess agents inherited `CLAUDECODE=1` env var → claude CLI refused to start → empty stdout → JSON parse failure. **Fix**: `buildChildEnv()` strips `CLAUDE_CODE` and `CLAUDE_CODE_ENTRYPOINT` from child process environment.
-
-### Fixed in v0.2.1
-3. **~~Planner JSON compliance~~** (IMPROVED): The planner agent sometimes returned human-readable summaries instead of JSON. **Fix**: Strengthened system prompt with "CRITICAL: respond with ONLY a valid JSON object", added retry loop (up to `maxRetries`, default 2) with dedicated `RETRY_PROMPT`, and added JSON extraction fallback (markdown code fences → raw `{...}` regex).
-
-4. **~~Zero token/cost tracking~~** (FIXED): CLI runtime read `event.cost_usd` but CLI outputs `total_cost_usd`. CLI runtime read flat `event.input_tokens` but CLI outputs nested `event.usage.input_tokens`. **Fix**: Corrected field names in both runtimes. Added `modelUsage` aggregation — sums `inputTokens`/`outputTokens` across all models for comprehensive accounting that includes Task subagents, sidechains, and auxiliary calls. SDK runtime now extracts cost/turns/session_id from both success and error result events.
-
-### Open Issues
-5. **Single-page app context**: For large projects, the project scanner's 2-level directory tree may be insufficient context for agents.
-
-6. **No merge strategy intelligence**: Worktree merges use simple `--no-ff`. No semantic understanding of whether parallel changes are compatible beyond git's text-level conflict detection.
-
-7. **Planner JSON not guaranteed**: Despite retry logic and prompt strengthening, there is no hard guarantee the LLM will produce valid JSON. The retry + extraction fallback chain reduces failure rate but doesn't eliminate it entirely.
-
----
-
-## File Index
+## Implemented Directory Structure
 
 ```
 src/
-├── index.ts                           # CLI entry point
+├── platform/
+│   ├── types.ts                              # Core types: AgentDefinition, Scope, Middleware, Plugin
+│   ├── platform.ts                           # Platform instance (wires all layers)
+│   └── config/
+│       ├── schema.ts                         # Zod schemas for platform.config.yaml
+│       └── loader.ts                         # YAML loading + validation
+│
+├── layer1-adapters/
+│   ├── types.ts                              # RuntimeAdapter interface, RuntimeEvent, RuntimeResult
+│   ├── adapter-registry.ts                   # Adapter registration + factory (Claude Code, API, CLI)
+│   ├── claude-code/
+│   │   └── adapter.ts                        # Claude Code adapter (@anthropic-ai/claude-agent-sdk)
+│   ├── api/
+│   │   └── adapter.ts                        # Generic HTTP adapter (OpenAI + Anthropic formats)
+│   └── cli/
+│       └── adapter.ts                        # Shell command adapter (child_process spawn)
+│
+├── layer2-core/
+│   ├── memory/
+│   │   ├── types.ts                          # KVStore, DocumentStore, MemoryManager interfaces
+│   │   ├── kv-store.ts                       # In-memory KV with 4-level scoping + subscriptions
+│   │   ├── doc-store.ts                      # In-memory document store with versioning + search
+│   │   └── memory-manager.ts                 # Scoped access, read-only enforcement, cleanup
+│   └── events/
+│       ├── types.ts                          # PlatformEvent, EventBus interface, EventTypes
+│       └── event-bus.ts                      # Pub/sub with glob patterns (*, **), once, waitFor
+│
+├── layer3-engine/
+│   ├── execution/
+│   │   ├── types.ts                          # ExecutionRequest, ExecutionEngine interface
+│   │   └── engine.ts                         # Dispatches to adapters, streams events
+│   ├── composition/
+│   │   ├── scheduler-interface.ts            # Pluggable Scheduler contract, WorkflowNode, NodeStatus
+│   │   ├── dag-scheduler.ts                  # DAG with cycle detection, topological sort, critical path
+│   │   ├── pipeline-runner.ts                # Sequential steps with {{previous}} interpolation
+│   │   └── workflow-orchestrator.ts          # Drives DAG workflows: schedule → dispatch → collect
+│   ├── middleware/
+│   │   └── chain.ts                          # MiddlewareChain + RetryMiddleware + TimeoutMiddleware + LoggingMiddleware
+│   └── runtime-resolver.ts                   # Capability matching + user preference order
+│
+├── layer4-surface/
+│   ├── cli/
+│   │   ├── index.ts                          # Command registration (init, run, status, workflow, agent)
+│   │   └── commands/
+│   │       ├── init.ts                       # orch init
+│   │       ├── run.ts                        # orch run <prompt>
+│   │       ├── status.ts                     # orch status
+│   │       ├── workflow.ts                   # orch workflow run <file>
+│   │       └── agent.ts                      # orch agent list / inspect / runtimes
+│   ├── sdk/
+│   │   ├── types.ts                          # AgentBuilder, AgentContext, Events constants
+│   │   ├── agent-builder.ts                  # Agent.create('name').runtime().capability().build()
+│   │   ├── workflow-builder.ts               # Workflow.create('name').step().parallel().build()
+│   │   └── index.ts                          # Public SDK exports
+│   └── agent-loader/
+│       └── parser.ts                         # YAML + Markdown (.md frontmatter) agent parsers
+│
 ├── cli/
-│   ├── index.ts                       # Command registration
-│   ├── helpers.ts                     # loadProjectContext()
-│   ├── formatters.ts                  # Task/status formatting
-│   └── commands/
-│       ├── init.ts                    # orch init
-│       ├── orchestrate.ts             # orch orchestrate
-│       ├── plan.ts                    # orch plan
-│       ├── run.ts                     # orch run
-│       ├── task.ts                    # orch task *
-│       ├── status.ts                  # orch status
-│       ├── agent.ts                   # orch agent *
-│       ├── context.ts                 # orch context *
-│       ├── worktree.ts               # orch worktree *
-│       ├── config.ts                  # orch config *
-│       ├── metrics.ts                 # orch metrics *
-│       ├── eval.ts                    # orch eval *
-│       ├── hooks.ts                   # orch hooks *
-│       └── serve.ts                   # orch serve
-├── core/
-│   ├── orchestrator.ts                # Main orchestration engine
-│   ├── planner.ts                     # LLM-powered task decomposition
-│   ├── executor.ts                    # Task execution on agent runtimes
-│   ├── scheduler.ts                   # Task→agent assignment with scoring
-│   ├── validator.ts                   # Multi-check validation (tsc, eslint, scripts)
-│   ├── session-manager.ts            # Session state persistence + resume
-│   ├── artifact-extractor.ts         # Extract files/exports from agent output
-│   ├── conflict-detector.ts          # File conflict prediction + detection
-│   └── session-analytics.ts          # Historical session insights
-├── agent/
-│   ├── types.ts                       # AgentConfig, AgentStatus, AgentInstance
-│   ├── agent-manager.ts              # Agent instance lifecycle
-│   ├── agent-registry.ts             # Agent template storage + capability matching
-│   ├── context-builder.ts            # Build task-specific agent prompts
-│   └── runtimes/
-│       ├── runtime.ts                 # AgentRuntime interface, AgentMessage, AgentRunResult
-│       ├── claude-sdk-runtime.ts     # @anthropic-ai/claude-agent-sdk runtime
-│       ├── claude-cli-runtime.ts     # Claude CLI subprocess runtime
-│       └── api-runtime.ts            # Direct Anthropic API runtime
-├── task/
-│   ├── types.ts                       # TaskStatus, Task, CreateTaskInput, VALID_TRANSITIONS
-│   ├── task-repository.ts            # Task CRUD + state machine
-│   └── task-graph.ts                 # In-memory DAG (topo sort, cycle detect, critical path)
-├── context/
-│   ├── types.ts                       # ContextCategory, ContextEntry
-│   ├── context-store.ts              # High-level context operations
-│   ├── context-repository.ts         # Context persistence + versioning
-│   ├── observation-store.ts          # Inter-agent observation sharing
-│   └── project-scanner.ts           # Auto-detect project structure
-├── events/
-│   ├── types.ts                       # Event type definitions
-│   ├── event-bus.ts                  # In-process pub/sub with glob matching
-│   └── event-store.ts               # Event persistence to SQLite
-├── git/
-│   ├── git-utils.ts                  # Git command helpers
-│   ├── worktree-manager.ts           # Worktree CRUD + merge
-│   └── merge-coordinator.ts          # Multi-worktree integration planning
-├── db/
-│   ├── schema.ts                     # Drizzle ORM table definitions (14 tables)
-│   └── connection.ts                 # SQLite connection (WAL mode)
-├── config/
-│   ├── types.ts                      # Zod schemas for all config
-│   ├── defaults.ts                   # Default config values
-│   └── loader.ts                     # YAML loading + env interpolation
-├── hooks/
-│   ├── session-start.ts              # Claude Code SessionStart hook
-│   └── prompt-intercept.ts           # Claude Code UserPromptSubmit hook
-├── web/
-│   ├── server.ts                     # Fastify server setup
-│   └── routes/                       # REST API routes
-├── eval/
-│   ├── types.ts                      # EvalScenario, EvalResult
-│   ├── eval-runner.ts                # Scenario execution
-│   ├── report-generator.ts           # Output formatting
-│   ├── builtin-scenarios.ts          # Built-in eval scenarios
-│   └── metrics-collector.ts          # Eval metrics collection
-├── mcp/
-│   ├── mcp-registry.ts              # MCP server configuration
-│   ├── mcp-manager.ts               # MCP server lifecycle
-│   └── tool-router.ts               # Tool call routing to MCP servers
+│   └── index.ts                              # Main CLI entry (platform commands + legacy subcommand)
+│
 └── util/
-    ├── id.ts                         # nanoid-based ID generation
-    ├── logger.ts                     # Pino logger setup
-    └── errors.ts                     # Error class hierarchy
+    ├── errors.ts                             # Error hierarchy (OrchestratorError, CycleDetectedError, etc.)
+    └── logger.ts                             # Pino logger
+
+tests/unit/platform/
+├── dag-scheduler.test.ts                     # 19 tests: DAG operations, scheduling, cycle detection
+├── middleware.test.ts                        # 12 tests: chain, retry, timeout, logging
+├── workflow-integration.test.ts              # 11 tests: full workflow with mock adapters
+├── platform-integration.test.ts              # 11 tests: platform wiring, plugins, runtime resolution
+├── doc-store.test.ts                         # 11 tests: document CRUD, versioning, search, scoping
+├── kv-store.test.ts                          # 11 tests: KV CRUD, subscriptions, scoping
+├── event-bus.test.ts                         # 10 tests: pub/sub, wildcards, once, waitFor
+├── agent-builder.test.ts                     #  9 tests: fluent builder, memory, preferences
+├── memory-manager.test.ts                    #  8 tests: scoped access, read-only, cleanup
+├── workflow-builder.test.ts                  #  7 tests: workflow builder, validation
+├── runtime-resolver.test.ts                  #  7 tests: capability matching, preference order
+├── agent-parser.test.ts                      #  6 tests: YAML + markdown parsing
+└── config-loader.test.ts                     #  6 tests: config schema validation
 ```
+
+---
+
+## SDK Contracts
+
+### Agent Builder (Fluent API)
+
+```typescript
+import { Agent, Workflow, Events } from 'dev-orchestrator/sdk';
+
+// Simple agent
+const agent = Agent.create('backend-builder')
+  .runtime('claude-code')
+  .capability('file-edit', 'shell', 'git')
+  .memory({ scope: 'workflow', access: 'read-write' })
+  .preferences({ maxRetries: 3, timeoutMs: 600_000 })
+  .description('Builds the backend API')
+  .instructions('Implement RESTful endpoints')
+  .on(Events.TASK_COMPLETE, handler)
+  .adapterConfig({ model: 'claude-sonnet-4-6' })
+  .build();
+```
+
+### Workflow Builder (Fluent API)
+
+```typescript
+const workflow = Workflow.create('full-stack-deploy')
+  .step('plan', plannerAgent, 'Create implementation plan')
+  .parallel([
+    { name: 'frontend', agent: feAgent, prompt: 'Build React frontend' },
+    { name: 'backend', agent: beAgent, prompt: 'Build Node.js API' },
+  ], { dependsOn: ['plan'] })
+  .step('deploy', deployAgent, 'Deploy to production', {
+    dependsOn: ['frontend', 'backend'],
+  })
+  .constraints({ maxConcurrent: 3, maxBudgetUsd: 20 })
+  .cwd('/workspace')
+  .projectId('my-app')
+  .build();
+```
+
+### Runtime Adapter Interface
+
+```typescript
+interface RuntimeAdapter {
+  readonly type: string;
+  readonly capabilities: string[];
+
+  initialize(config: AdapterConfig): Promise<void>;
+  execute(input: ExecutionInput): AsyncGenerator<RuntimeEvent, void, undefined>;
+  cancel(): Promise<void>;
+  status(): RuntimeState;
+}
+
+type RuntimeState = 'idle' | 'initializing' | 'running' | 'cancelled' | 'completed' | 'failed';
+
+type RuntimeEvent =
+  | { type: 'progress'; message: string; percent?: number; timestamp: string }
+  | { type: 'output'; content: string; role: 'assistant' | 'system'; timestamp: string }
+  | { type: 'tool_use'; tool: string; input: Record<string, unknown>; timestamp: string }
+  | { type: 'error'; error: Error; recoverable: boolean; timestamp: string }
+  | { type: 'done'; result: RuntimeResult; timestamp: string };
+```
+
+### Pluggable Scheduler Interface
+
+```typescript
+interface Scheduler {
+  getNextBatch(
+    readyNodes: WorkflowNode[],
+    runningCount: number,
+    constraints: SchedulerConstraints,
+  ): WorkflowNode[];
+}
+
+interface SchedulerConstraints {
+  maxConcurrent: number;
+  maxBudgetUsd?: number;
+  currentCostUsd?: number;
+}
+```
+
+### Plugin Interface
+
+```typescript
+interface Plugin {
+  name: string;
+  version: string;
+  initialize?(platform: PlatformContext): Promise<void>;
+  adapters?: RuntimeAdapterFactory[];
+  middleware?: Middleware[];
+}
+```
+
+### agent.yaml Format
+
+```yaml
+# Required
+name: frontend-builder
+
+# Optional (all have sensible defaults)
+description: "Builds React frontend from design specs"
+runtime: api                          # Falls back to capability matching if omitted
+capabilities: [text-generation]
+memory:
+  scope: workflow                     # global | project | workflow | agent
+  access: read-only                   # read-only | read-write
+  subscribe: [api-schema]             # KV keys to watch
+preferences:
+  fallback_runtime: claude-code
+  max_retries: 2
+  timeout: 300s
+steps:
+  - name: design
+    description: Design the component architecture
+  - name: implement
+    description: Implement the components
+    depends_on: [design]
+triggers:
+  on_event: backend-ready             # Start when this event fires
+config:
+  model: claude-sonnet-4-6            # Passthrough to adapter
+```
+
+### Descriptive .md Agent Format
+
+```markdown
+---
+name: deploy-agent
+runtime: claude-code
+capabilities: [shell, file-edit]
+---
+
+# Deploy Agent
+
+You are responsible for deploying the application to production.
+
+## Steps
+
+1. **Test**: Run the test suite and confirm all tests pass
+2. **Build**: Build the Docker image
+3. **Deploy**: Apply Kubernetes manifests
+```
+
+If `## Steps` is present, the platform creates a literal execution plan from the steps.
+If absent, the platform uses the body as instructions for a single-step execution.
+
+---
+
+## Middleware Chain
+
+Middleware wraps execution with cross-cutting concerns. Each middleware calls `next()` to continue the chain.
+
+**Built-in middleware:**
+
+| Middleware | Purpose |
+|-----------|---------|
+| `LoggingMiddleware` | Emits `agent.started` / `agent.completed` / `agent.failed` events |
+| `TimeoutMiddleware` | Cancels execution if it exceeds `agent.preferences.timeoutMs` |
+| `RetryMiddleware` | Retries failed executions up to `agent.preferences.maxRetries` times |
+
+**Custom middleware:**
+
+```typescript
+const rateLimiter: Middleware = {
+  name: 'rate-limiter',
+  async execute(ctx, next) {
+    await waitForSlot(ctx.agent.runtime);
+    return next();
+  },
+};
+
+platform.middlewareChain.add(rateLimiter);
+```
+
+---
+
+## Memory System
+
+### Two-Tier Model
+
+| Tier | Purpose | Interface | Implementation |
+|------|---------|-----------|---------------|
+| **KV Store** | Fast coordination: signals, locks, small state | `get`, `set`, `delete`, `list`, `subscribe`, `subscribeAll` | In-memory with change notifications |
+| **Document Store** | Rich context: requirements, architecture, API contracts | `get`, `set`, `delete`, `list`, `search` | In-memory with versioning |
+
+### Scoping and Access Control
+
+```typescript
+// Agent gets its own private scope + workflow shared scope
+const { kv, docs, workflowKv, workflowDocs } = memoryManager.createAgentMemory(
+  'workflow-123',
+  'agent-abc',
+  'read-write',  // or 'read-only' for workflow stores
+);
+
+// Agent writes to its private scope
+await kv.set('internal-state', 'processing');
+
+// Agent writes to shared workflow scope (visible to other agents)
+await workflowKv.set('api-schema', '{ "endpoint": "/users" }');
+
+// Another agent subscribes reactively
+workflowKv.subscribe('api-schema', (value, oldValue) => {
+  console.log('Schema updated:', value);
+});
+```
+
+---
+
+## Event System
+
+Glob-style pattern matching for event subscriptions:
+
+```typescript
+// Exact match
+eventBus.subscribe('agent.completed', handler);
+
+// Single-segment wildcard
+eventBus.subscribe('agent.*', handler);  // matches agent.completed, agent.failed
+
+// Multi-segment wildcard
+eventBus.subscribe('workflow.**', handler);  // matches workflow.started, workflow.step.completed
+
+// One-time handler
+eventBus.once('workflow.completed', handler);
+
+// Promise-based wait
+const event = await eventBus.waitFor('agent.completed', 30_000);
+```
+
+**Well-known event types:**
+
+| Event | Source |
+|-------|--------|
+| `agent.initialized`, `agent.started`, `agent.progress`, `agent.completed`, `agent.failed` | Middleware / Engine |
+| `workflow.started`, `workflow.step.completed`, `workflow.completed`, `workflow.failed` | Orchestrator / Pipeline |
+| `execution.started`, `execution.completed`, `execution.failed`, `execution.retrying` | Engine |
+| `memory.kv.changed`, `memory.doc.updated` | Memory subsystem |
+
+---
+
+## Runtime Resolution
+
+When an agent doesn't specify a runtime, the platform resolves one automatically:
+
+1. **Explicit runtime** — Agent specifies `runtime: claude-code` → use it
+2. **User preferences** — Match capabilities against `runtimes` in config (sorted by `priority`)
+3. **Adapter capabilities** — Match against all registered adapters' declared capabilities
+4. **Fallback runtime** — Agent's `preferences.fallbackRuntime`
+5. **Default** — `claude-code`
+
+```yaml
+# platform.config.yaml
+runtimes:
+  - name: claude
+    type: claude-code
+    priority: 0
+    capabilities: [file-edit, shell, git]
+  - name: openai
+    type: api
+    priority: 1
+    config: { base_url: "https://api.openai.com/v1" }
+  - name: deployer
+    type: cli
+    priority: 2
+    capabilities: [shell, deployment]
+```
+
+---
+
+## Implementation Status
+
+### Completed (M1–M4)
+
+| Milestone | Components | Tests |
+|-----------|-----------|-------|
+| **M1: Hello World** | Platform types, config schema, Claude Code adapter, KV store, event bus, execution engine, agent builder SDK, CLI (init/run/status) | 36 |
+| **M2: Memory & Multi-Step** | DAG scheduler, pipeline runner, document store, memory manager, middleware chain (retry/timeout/logging), workflow orchestrator | 61 |
+| **M3: Multi-Runtime** | API adapter, CLI adapter, agent parser (.yaml + .md), runtime resolver, workflow builder SDK | 20 |
+| **M4: Platform** | Adapter registry (all 3 adapters), Platform class wiring, CLI commands (workflow/agent), plugin system | 11 |
+
+**Total: 254 tests passing across 29 test files.**
+
+### Not Yet Implemented
+
+- Scaffolding wizard (`orch scaffold agent`)
+- Agent template gallery
+- Framework adapter (LangGraph/AutoGen)
+- Web dashboard
+- SQLite persistence for KV and document stores (currently in-memory)
+- Agent merger (external hosted agents)
+- `.md` planner fallback (low-cost model decomposition)
+- npm package publishing (separate SDK + CLI packages)
+
+---
+
+## Component Migration Map (from Legacy)
+
+| Current module | Status | New location |
+|---|---|---|
+| `TaskGraph` (DAG) | **Reshaped** → `DAGScheduler` | `src/layer3-engine/composition/dag-scheduler.ts` |
+| `EventBus` | **Kept** + new platform bus | `src/layer2-core/events/event-bus.ts` |
+| `ContextStore` | **Replaced** → Document Store | `src/layer2-core/memory/doc-store.ts` |
+| `ClaudeSdkRuntime` | **Reshaped** → Claude Code adapter | `src/layer1-adapters/claude-code/adapter.ts` |
+| `Scheduler` | **Reshaped** → pluggable interface | `src/layer3-engine/composition/scheduler-interface.ts` |
+| `Orchestrator` | **Rewritten** → Workflow Orchestrator | `src/layer3-engine/composition/workflow-orchestrator.ts` |
+| `Executor` | **Reshaped** → Execution Engine | `src/layer3-engine/execution/engine.ts` |
+| `CLI (Commander)` | **Extended** → platform commands + legacy subcommand | `src/layer4-surface/cli/` |
+| `Config (Zod)` | **Extended** → platform config schema | `src/platform/config/schema.ts` |
+
+---
+
+## Testing Strategy
+
+- Each milestone produces a testable, end-to-end MVP
+- Unit tests cover individual components (KV, events, DAG, middleware)
+- Integration tests verify cross-layer wiring (workflow + engine + memory + events)
+- Mock adapters replace real runtimes in tests (no subprocess spawning)
+- All tests run via `npx vitest run` in under 2 seconds
